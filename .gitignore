@@ -25,3 +25,6 @@ var/
 # virtual environment
 .myenv
 .venv
+
+# Repo directory.
+models/
