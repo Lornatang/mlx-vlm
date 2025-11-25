@@ -16,12 +16,7 @@ import soundfile as sf
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 from PIL import Image, ImageOps
-from transformers import (
-    AutoConfig,
-    AutoProcessor,
-    PreTrainedTokenizer,
-    PreTrainedTokenizerFast,
-)
+from transformers import AutoConfig, AutoProcessor, PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from .models.base import BaseImageProcessor
 from .tokenizer_utils import load_tokenizer
@@ -51,13 +46,7 @@ def skip_multimodal_module(path: str) -> bool:
     Returns:
         bool: True if the module is multimodal and should skip quantization, False otherwise
     """
-    return (
-        "vision_model" in path
-        or "vision_tower" in path
-        or "sam_model" in path
-        or "audio_model" in path
-        or "audio_tower" in path
-    )
+    return "vision_model" in path or "vision_tower" in path or "sam_model" in path or "audio_model" in path or "audio_tower" in path
 
 
 def get_model_and_args(config: dict):
@@ -84,9 +73,7 @@ def get_model_and_args(config: dict):
     return arch, model_type
 
 
-def get_model_path(
-    path_or_hf_repo: str, revision: Optional[str] = None, force_download: bool = False
-) -> Path:
+def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None, force_download: bool = False) -> Path:
     """
     Ensures the model is available locally. If the path does not exist locally,
     it is downloaded from the Hugging Face Hub.
@@ -184,16 +171,10 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
 
     # Sanitize weights
     weights = sanitize_weights(model, weights)
-    weights = sanitize_weights(
-        model_class.VisionModel, weights, model_config.vision_config
-    )
-    weights = sanitize_weights(
-        model_class.LanguageModel, weights, model_config.text_config
-    )
+    weights = sanitize_weights(model_class.VisionModel, weights, model_config.vision_config)
+    weights = sanitize_weights(model_class.LanguageModel, weights, model_config.text_config)
     if hasattr(model_class, "AudioModel"):
-        weights = sanitize_weights(
-            model_class.AudioModel, weights, model_config.audio_config
-        )
+        weights = sanitize_weights(model_class.AudioModel, weights, model_config.audio_config)
 
     if (quantization := config.get("quantization", None)) is not None:
         # Handle legacy models which may or may not have vision quantized
@@ -255,9 +236,7 @@ def update_module_configs(model_config, model_class, config, modules):
         config_attr = f"{config_name}_config"
         if hasattr(model_config, config_attr):
             config_class = getattr(model_class, f"{config_name.title()}Config")
-            setattr(
-                model_config, config_attr, config_class.from_dict(config[config_attr])
-            )
+            setattr(model_config, config_attr, config_class.from_dict(config[config_attr]))
     return model_config
 
 
@@ -290,9 +269,7 @@ def load(
         ValueError: If model class or args class are not found.
     """
     force_download = kwargs.get("force_download", False)
-    model_path = get_model_path(
-        path_or_hf_repo, force_download=force_download, revision=revision
-    )
+    model_path = get_model_path(path_or_hf_repo, force_download=force_download, revision=revision)
     model = load_model(model_path, lazy, **kwargs)
     if adapter_path is not None:
         model = apply_lora_layers(model, adapter_path)
@@ -357,26 +334,20 @@ def load_image_processor(model_path: Union[str, Path], **kwargs) -> BaseImagePro
     return image_processor
 
 
-def load_processor(
-    model_path, add_detokenizer=True, eos_token_ids=None, **kwargs
-) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
+def load_processor(model_path, add_detokenizer=True, eos_token_ids=None, **kwargs) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
 
     processor = AutoProcessor.from_pretrained(model_path, **kwargs)
     if add_detokenizer:
         detokenizer_class = load_tokenizer(model_path, return_tokenizer=False)
 
         # Get the tokenizer object
-        tokenizer_obj = (
-            processor.tokenizer if hasattr(processor, "tokenizer") else processor
-        )
+        tokenizer_obj = processor.tokenizer if hasattr(processor, "tokenizer") else processor
 
         # Instantiate the detokenizer
         processor.detokenizer = detokenizer_class(tokenizer_obj)
 
         # Determine the EOS token IDs, prioritizing the function argument
-        final_eos_token_ids = (
-            eos_token_ids if eos_token_ids is not None else tokenizer_obj.eos_token_ids
-        )
+        final_eos_token_ids = eos_token_ids if eos_token_ids is not None else tokenizer_obj.eos_token_ids
 
         # Create and assign the StoppingCriteria
         criteria = StoppingCriteria(final_eos_token_ids, tokenizer_obj)
@@ -388,9 +359,7 @@ def load_processor(
     return processor
 
 
-def fetch_from_hub(
-    model_path: Path, lazy: bool = False, **kwargs
-) -> Tuple[nn.Module, dict, PreTrainedTokenizer]:
+def fetch_from_hub(model_path: Path, lazy: bool = False, **kwargs) -> Tuple[nn.Module, dict, PreTrainedTokenizer]:
     model = load_model(model_path, lazy, **kwargs)
     config = load_config(model_path, **kwargs)
     processor = load_processor(
@@ -490,9 +459,7 @@ def apply_repetition_penalty(logits: mx.array, generated_tokens: Any, penalty: f
     if len(generated_tokens) > 0:
         indices = mx.array([token for token in generated_tokens])
         selected_logits = logits[:, indices]
-        selected_logits = mx.where(
-            selected_logits < 0, selected_logits * penalty, selected_logits / penalty
-        )
+        selected_logits = mx.where(selected_logits < 0, selected_logits * penalty, selected_logits / penalty)
         logits[:, indices] = selected_logits
     return logits
 
@@ -514,11 +481,7 @@ def save_weights(
 
     shards = make_shards(weights)
     shards_count = len(shards)
-    shard_file_format = (
-        "model-{:05d}-of-{:05d}.safetensors"
-        if shards_count > 1
-        else "model.safetensors"
-    )
+    shard_file_format = "model-{:05d}-of-{:05d}.safetensors" if shards_count > 1 else "model.safetensors"
 
     total_size = sum(v.nbytes for v in weights.values())
     index_data = {"metadata": {"total_size": total_size}, "weight_map": {}}
@@ -541,9 +504,7 @@ def save_weights(
             index_data["weight_map"][weight_name] = shard_name
         del shard
 
-    index_data["weight_map"] = {
-        k: index_data["weight_map"][k] for k in sorted(index_data["weight_map"])
-    }
+    index_data["weight_map"] = {k: index_data["weight_map"][k] for k in sorted(index_data["weight_map"])}
 
     with open(save_path / "model.safetensors.index.json", "w") as f:
         json.dump(
@@ -592,31 +553,23 @@ def load_image(image_source: Union[str, Path, BytesIO], timeout: int = 10):
                 import base64
 
                 if "," not in image_source:
-                    raise ValueError(
-                        "Invalid data URI format - missing comma separator"
-                    )
+                    raise ValueError("Invalid data URI format - missing comma separator")
 
                 _, data = image_source.split(",", 1)
                 image_source = BytesIO(base64.b64decode(data))
 
             image = Image.open(image_source)
         except IOError as e:
-            raise ValueError(
-                f"Failed to load image from {image_source} with error: {e}"
-            ) from e
+            raise ValueError(f"Failed to load image from {image_source} with error: {e}") from e
     elif image_source.startswith(("http://", "https://")):
         try:
             response = requests.get(image_source, stream=True, timeout=timeout)
             response.raise_for_status()
             image = Image.open(response.raw)
         except Exception as e:
-            raise ValueError(
-                f"Failed to load image from URL: {image_source} with error {e}"
-            ) from e
+            raise ValueError(f"Failed to load image from URL: {image_source} with error {e}") from e
     else:
-        raise ValueError(
-            f"The image {image_source} must be a valid URL or existing file."
-        )
+        raise ValueError(f"The image {image_source} must be a valid URL or existing file.")
 
     image = ImageOps.exif_transpose(image)
     image = image.convert("RGB")
@@ -688,9 +641,7 @@ def load_audio(
             response.raise_for_status()
             audio, sample_rate = sf.read(BytesIO(response.content), always_2d=True)
         except Exception as e:
-            raise ValueError(
-                f"Failed to load audio from URL: {file} with error {e}"
-            ) from e
+            raise ValueError(f"Failed to load audio from URL: {file} with error {e}") from e
     else:
         audio, sample_rate = sf.read(file, always_2d=True)
 
@@ -772,9 +723,7 @@ def process_inputs_with_fallback(
                     **kwargs,
                 )
             except Exception as fallback_error:
-                raise ValueError(
-                    f"Failed to process inputs with error: {fallback_error}"
-                ) from fallback_error
+                raise ValueError(f"Failed to process inputs with error: {fallback_error}") from fallback_error
 
         raise ValueError(f"Failed to process inputs with error: {e}")
 
@@ -791,9 +740,7 @@ def prepare_inputs(
 ):
 
     if not images and not audio:
-        tokenizer = (
-            processor.tokenizer if hasattr(processor, "tokenizer") else processor
-        )
+        tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
         inputs = tokenizer(prompts, add_special_tokens=add_special_tokens)
         input_ids = mx.array([inputs.input_ids])
         mask = mx.array([inputs.attention_mask])
@@ -807,9 +754,7 @@ def prepare_inputs(
         if not isinstance(images, list):
             images = [images]
 
-        image_processor = (
-            processor.image_processor if hasattr(processor, "image_processor") else None
-        )
+        image_processor = processor.image_processor if hasattr(processor, "image_processor") else None
         images = [process_image(img, resize_shape, image_processor) for img in images]
 
     # Process audio
@@ -818,36 +763,24 @@ def prepare_inputs(
             audio = [audio]
 
         if len(audio) > 1:
-            print(
-                "\033[33mWarning\033[0m: Single prompt with multiple audio files is not supported yet. Using the first audio file.\n"
-            )
+            print("\033[33mWarning\033[0m: Single prompt with multiple audio files is not supported yet. Using the first audio file.\n")
             audio = audio[:1]
 
-        audio = [
-            load_audio(audio_file, sr=processor.feature_extractor.sampling_rate)
-            for audio_file in audio
-        ]
+        audio = [load_audio(audio_file, sr=processor.feature_extractor.sampling_rate) for audio_file in audio]
     else:
         audio = None
 
     model_inputs = {}
 
-    if hasattr(processor, "image_processor") and isinstance(
-        processor.image_processor, BaseImageProcessor
-    ):
+    if hasattr(processor, "image_processor") and isinstance(processor.image_processor, BaseImageProcessor):
         if not isinstance(prompts, list):
             prompts = [prompts]
 
         processor.pad_token = processor.eos_token
-        text_chunks = [
-            [processor(chunk).input_ids for chunk in prompt.split("<image>")]
-            for prompt in prompts
-        ]
+        text_chunks = [[processor(chunk).input_ids for chunk in prompt.split("<image>")] for prompt in prompts]
 
         # Find the maximum length for padding
-        max_length = max(
-            sum(len(chunk) for chunk in chunks) + 1 for chunks in text_chunks
-        )
+        max_length = max(sum(len(chunk) for chunk in chunks) + 1 for chunks in text_chunks)
 
         # Pad and create input_ids
         input_ids = []
@@ -859,9 +792,7 @@ def prepare_inputs(
         model_inputs["input_ids"] = mx.array(input_ids)
         pixel_values = processor.image_processor.preprocess(images=images)
         model_inputs["pixel_values"] = mx.array(np.stack(pixel_values))
-        model_inputs["attention_mask"] = mx.array(
-            [(ids != processor.pad_token_id) for ids in input_ids]
-        ).astype(mx.int32)
+        model_inputs["attention_mask"] = mx.array([(ids != processor.pad_token_id) for ids in input_ids]).astype(mx.int32)
 
     else:
         if hasattr(processor, "tokenizer"):
@@ -880,9 +811,7 @@ def prepare_inputs(
             inputs["pixel_values"] = inputs["images"]
             inputs.pop("images")
 
-        model_inputs["attention_mask"] = (
-            mx.array(inputs["attention_mask"]) if "attention_mask" in inputs else None
-        )
+        model_inputs["attention_mask"] = mx.array(inputs["attention_mask"]) if "attention_mask" in inputs else None
 
         # Convert inputs to model_inputs with mx.array if present
         for key, value in inputs.items():
@@ -922,16 +851,11 @@ class StoppingCriteria:
         if new_eos_token_ids is not None:
             if isinstance(new_eos_token_ids, str):
                 new_eos_token_ids = [new_eos_token_ids]
-            new_eos_token_ids = [
-                self.tokenizer.encode(" " + token, add_special_tokens=False)[-1]
-                for token in new_eos_token_ids
-            ]
+            new_eos_token_ids = [self.tokenizer.encode(" " + token, add_special_tokens=False)[-1] for token in new_eos_token_ids]
             self.eos_token_ids.extend(new_eos_token_ids)
 
     def reset(self, eos_token_ids: List[int] = None):
-        eos_token_ids = (
-            eos_token_ids if eos_token_ids is not None else self.tokenizer.eos_token_ids
-        )
+        eos_token_ids = eos_token_ids if eos_token_ids is not None else self.tokenizer.eos_token_ids
 
         if isinstance(eos_token_ids, int):
             eos_token_ids = [eos_token_ids]

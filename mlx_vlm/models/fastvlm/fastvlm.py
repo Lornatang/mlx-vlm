@@ -50,19 +50,14 @@ class Model(nn.Module):
         image_features = image_features.reshape(B, H * W, C)
         image_features = self.mm_projector(image_features)
 
-        final_inputs_embeds = self.prepare_inputs_for_multimodal(
-            image_features, input_ids, mask
-        )
+        final_inputs_embeds = self.prepare_inputs_for_multimodal(image_features, input_ids, mask)
         return final_inputs_embeds
 
     # Source: https://github.com/apple/ml-fastvlm/blob/592b4add3c1c8a518e77d95dc6248e76c1dd591f/llava/model/llava_arch.py#L146
     def prepare_inputs_for_multimodal(self, image_features, input_ids, mask):
         if mask is not None:
             input_ids = [
-                cur_input_ids[
-                    (start := mx.argmax(cur_mask).item()) : start
-                    + cur_mask.sum().item()
-                ]
+                cur_input_ids[(start := mx.argmax(cur_mask).item()) : start + cur_mask.sum().item()]
                 for cur_input_ids, cur_mask in zip(input_ids, mask)
             ]
 
@@ -72,34 +67,18 @@ class Model(nn.Module):
             num_images = (cur_input_ids == self.config.image_token_index).sum()
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
-                cur_input_embeds_1 = self.language_model.model.embed_tokens(
-                    cur_input_ids
-                )
-                cur_input_embeds = mx.concatenate(
-                    [cur_input_embeds_1, cur_image_features[0:0]], dim=0
-                )
+                cur_input_embeds_1 = self.language_model.model.embed_tokens(cur_input_ids)
+                cur_input_embeds = mx.concatenate([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
                 new_input_embeds.append(cur_input_embeds)
                 cur_image_idx += 1
                 continue
 
-            image_token_indices = (
-                [-1]
-                + np.where(np.array(cur_input_ids == self.config.image_token_index))[
-                    0
-                ].tolist()
-                + [cur_input_ids.shape[0]]
-            )
+            image_token_indices = [-1] + np.where(np.array(cur_input_ids == self.config.image_token_index))[0].tolist() + [cur_input_ids.shape[0]]
             cur_input_ids_noim = []
             for i in range(len(image_token_indices) - 1):
-                cur_input_ids_noim.append(
-                    cur_input_ids[
-                        image_token_indices[i] + 1 : image_token_indices[i + 1]
-                    ]
-                )
+                cur_input_ids_noim.append(cur_input_ids[image_token_indices[i] + 1 : image_token_indices[i + 1]])
             split_sizes = image_token_indices[1:]
-            cur_input_embeds = self.language_model.model.embed_tokens(
-                mx.concatenate(cur_input_ids_noim)
-            )
+            cur_input_embeds = self.language_model.model.embed_tokens(mx.concatenate(cur_input_ids_noim))
             cur_input_embeds_no_im = mx.split(cur_input_embeds, split_sizes)
 
             cur_new_input_embeds = []
@@ -114,9 +93,7 @@ class Model(nn.Module):
             new_input_embeds.append(cur_new_input_embeds)
 
         if self.config.tokenizer_model_max_length is not None:
-            new_input_embeds = [
-                x[: self.config.tokenizer_model_max_length] for x in new_input_embeds
-            ]
+            new_input_embeds = [x[: self.config.tokenizer_model_max_length] for x in new_input_embeds]
 
         max_len = max(x.shape[0] for x in new_input_embeds)
         new_input_embeds_padded = []
@@ -163,19 +140,14 @@ class Model(nn.Module):
         **kwargs,
     ):
         input_embeddings = self.get_input_embeddings(input_ids, pixel_values, mask)
-        logits = self.language_model(
-            input_ids, mask=mask, cache=cache, inputs_embeds=input_embeddings
-        )
+        logits = self.language_model(input_ids, mask=mask, cache=cache, inputs_embeds=input_embeddings)
         return logits
 
     def sanitize(self, weights):
         def transform_key(key):
             if "vision_tower" in key:
                 if "model.vision_tower" in key:
-                    key = key.replace(
-                        "model.vision_tower.vision_tower.model",
-                        "vision_tower.vision_model",
-                    )
+                    key = key.replace("model.vision_tower.vision_tower.backbone.", "vision_tower.vision_model.")
                     key = key.replace("patch_embed", "patch_embed.blocks")
                 return key
             if "lm_head" in key:
