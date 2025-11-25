@@ -135,12 +135,11 @@ class Model(nn.Module):
         self,
         input_ids: mx.array,
         pixel_values: mx.array,
-        mask: mx.array,
         cache=None,
         **kwargs,
     ):
-        input_embeddings = self.get_input_embeddings(input_ids, pixel_values, mask)
-        logits = self.language_model(input_ids, mask=mask, cache=cache, inputs_embeds=input_embeddings)
+        input_embeddings = self.get_input_embeddings(input_ids, pixel_values, None)
+        logits = self.language_model(input_ids, cache=cache, inputs_embeds=input_embeddings)
         return logits
 
     def sanitize(self, weights):

@@ -2,7 +2,6 @@ from typing import Any, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.cache import ArraysCache, KVCache
 from mlx_lm.models.qwen2 import Qwen2Model
 
 from ..base import LanguageModelOutput
@@ -22,11 +21,10 @@ class LanguageModel(nn.Module):
     def __call__(
         self,
         inputs: mx.array,
-        mask: mx.array = None,
         cache=None,
         inputs_embeds: Optional[mx.array] = None,
     ):
-        out = self.model(inputs, None, cache, inputs_embeds)
+        out = self.model(inputs, cache, inputs_embeds)
         out = self.model.embed_tokens.as_linear(out)
         return LanguageModelOutput(out)
 
