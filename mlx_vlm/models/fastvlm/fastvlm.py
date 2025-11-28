@@ -165,7 +165,7 @@ class Model(nn.Module):
                 if "model.vision_tower" in key:
                     key = key.replace("model.vision_tower.vision_tower.backbone.", "vision_tower.vision_model.")
                     key = key.replace("model.vision_tower.vision_tower.model.", "vision_tower.vision_model.")
-                    key = key.replace("patch_embed.layers", "patch_embed.blocks")
+                    key = key.replace("patch_embed", "patch_embed.blocks")
                 return key
             if "lm_head" in key:
                 return key
