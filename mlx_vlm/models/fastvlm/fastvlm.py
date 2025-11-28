@@ -28,6 +28,23 @@ def build_vision_projector(config):
     raise ValueError(f"Unknown projector type: {projector_type}")
 
 
+# def build_vision_projector(config):
+#     hidden_size = config.text_config.hidden_size
+#     projector_type = getattr(config, "mm_projector_type", "mlp2x_gelu")
+#     if projector_type == "linear":
+#         return nn.Linear(config.mm_hidden_size, hidden_size)
+
+#     mlp_gelu_match = re.match(r"^mlp(\d+)x_gelu$", projector_type)
+#     if mlp_gelu_match:
+#         mlp_depth = int(mlp_gelu_match.group(1))
+#         modules = [nn.Linear(config.mm_hidden_size, hidden_size)]
+#         for _ in range(1, mlp_depth):
+#             modules.append(nn.GELU())
+#             modules.append(nn.Linear(hidden_size, hidden_size))
+#         return nn.Sequential(*modules)
+#     raise ValueError(f"Unknown projector type: {projector_type}")
+
+
 class Model(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -147,10 +164,16 @@ class Model(nn.Module):
             if "vision_tower" in key:
                 if "model.vision_tower" in key:
                     key = key.replace("model.vision_tower.vision_tower.backbone.", "vision_tower.vision_model.")
-                    key = key.replace("patch_embed", "patch_embed.blocks")
+                    key = key.replace("model.vision_tower.vision_tower.model.", "vision_tower.vision_model.")
+                    key = key.replace("patch_embed.layers", "patch_embed.blocks")
                 return key
             if "lm_head" in key:
                 return key
+            # if "mm_projector" in key:
+            #     key = key.replace("model.", "")
+            #     if key.startswith("mm_projector.") and not key.startswith("mm_projector.layers"):
+            #         return key.replace("mm_projector.", "mm_projector.layers.")
+            #     return key
             if "mm_projector" in key:
                 return key.replace("model.", "")
             if "language_model" not in key:
