@@ -50,6 +50,7 @@ def skip_multimodal_module(path: str) -> bool:
     return (
         "vision_model" in path
         or "vision_tower" in path
+        or "mm_projector" in path
         or "vl_connector" in path
         or "sam_model" in path
         or "audio_model" in path
