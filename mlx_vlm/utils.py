@@ -34,6 +34,7 @@ MODEL_REMAPPING = {
     "lfm2-vl": "lfm2_vl",
     "cohere2_vision": "aya_vision",
     "jvlm": "jina_vlm",
+    "jingyuvl_qwen3": "jingyu_vl",
 }
 
 MAX_FILE_SIZE_GB = 5
@@ -87,6 +88,7 @@ def skip_multimodal_module(path: str) -> bool:
         or "audio_model" in path
         or "audio_tower" in path
         or "code_predictor" in path
+        or "mm_projector" in path
     )
 
 
