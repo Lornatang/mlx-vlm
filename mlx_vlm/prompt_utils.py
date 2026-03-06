@@ -43,6 +43,7 @@ MODEL_CONFIG = {
     "qwen3_vl_moe": MessageFormat.LIST_WITH_IMAGE_FIRST,
     "qwen3_5": MessageFormat.LIST_WITH_IMAGE_FIRST,
     "qwen3_5_moe": MessageFormat.LIST_WITH_IMAGE_FIRST,
+    "minicpmo": MessageFormat.IMAGE_TOKEN,
     "mistral3": MessageFormat.LIST_WITH_IMAGE_FIRST,
     "glm4v": MessageFormat.LIST_WITH_IMAGE_FIRST,
     "glm4v_moe": MessageFormat.LIST_WITH_IMAGE_FIRST,
@@ -707,4 +708,4 @@ def apply_chat_template(
     if model_type in ["paligemma", "molmo", "florence2"]:
         return messages[-1]
 
-    return get_chat_template(processor, messages, add_generation_prompt)
+    return get_chat_template(processor, messages, add_generation_prompt, **kwargs)
