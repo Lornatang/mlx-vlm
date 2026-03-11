@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import gc
 import importlib
 import json
@@ -24,6 +23,7 @@ from typing_extensions import Required, TypeAlias, TypedDict
 from .generate import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL_PATH,
+    DEFAULT_PREFILL_STEP_SIZE,
     DEFAULT_QUANTIZED_KV_START,
     DEFAULT_SEED,
     DEFAULT_TEMPERATURE,
@@ -41,6 +41,10 @@ ALLOWED_TEMPLATE_KWARGS = {
     "thinking_start_token",
     "thinking_end_token",
 }
+
+
+def get_prefill_step_size():
+    return int(os.environ.get("PREFILL_STEP_SIZE", DEFAULT_PREFILL_STEP_SIZE))
 
 
 def get_quantized_kv_bits(model: str):
@@ -791,6 +795,7 @@ async def responses_endpoint(request: Request):
                         temperature=openai_request.temperature,
                         max_tokens=openai_request.max_output_tokens,
                         top_p=openai_request.top_p,
+                        prefill_step_size=get_prefill_step_size(),
                         kv_bits=get_quantized_kv_bits(openai_request.model),
                         kv_group_size=get_kv_group_size(),
                         max_kv_size=get_max_kv_size(openai_request.model),
@@ -813,7 +818,6 @@ async def responses_endpoint(request: Request):
 
                         # Send response.output_text.delta event
                         yield f"event: response.output_text.delta\ndata: {ResponseOutputTextDeltaEvent(type='response.output_text.delta', item_id=message_id, output_index=0, content_index=0, delta=delta).model_dump_json()}\n\n"
-                        await asyncio.sleep(0.01)
 
                     # Send response.output_text.done event (to match the openai pipeline)
                     yield f"event: response.output_text.done\ndata: {ResponseOutputTextDoneEvent(type='response.output_text.done', item_id=message_id, output_index=0, content_index=0, text=full_text).model_dump_json()}\n\n"
@@ -882,6 +886,7 @@ async def responses_endpoint(request: Request):
                     temperature=openai_request.temperature,
                     max_tokens=openai_request.max_output_tokens,
                     top_p=openai_request.top_p,
+                    prefill_step_size=get_prefill_step_size(),
                     kv_bits=get_quantized_kv_bits(openai_request.model),
                     kv_group_size=get_kv_group_size(),
                     max_kv_size=get_max_kv_size(openai_request.model),
@@ -1051,6 +1056,7 @@ async def chat_completions_endpoint(request: ChatRequest):
                         temperature=request.temperature,
                         max_tokens=request.max_tokens,
                         top_p=request.top_p,
+                        prefill_step_size=get_prefill_step_size(),
                         kv_bits=get_quantized_kv_bits(request.model),
                         kv_group_size=get_kv_group_size(),
                         max_kv_size=get_max_kv_size(request.model),
@@ -1092,9 +1098,6 @@ async def chat_completions_endpoint(request: ChatRequest):
                         )
 
                         yield f"data: {chunk_data.model_dump_json()}\n\n"
-                        await asyncio.sleep(
-                            0.01
-                        )  # Small sleep to prevent blocking event loop entirely
 
                     if tool_parser_type is not None:
                         tool_calls = process_tool_calls(
@@ -1163,6 +1166,7 @@ async def chat_completions_endpoint(request: ChatRequest):
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
                     top_p=request.top_p,
+                    prefill_step_size=get_prefill_step_size(),
                     kv_bits=get_quantized_kv_bits(request.model),
                     kv_group_size=get_kv_group_size(),
                     max_kv_size=get_max_kv_size(request.model),
@@ -1320,6 +1324,14 @@ def main():
         help="Trust remote code when loading models from Hugging Face Hub.",
     )
     parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=DEFAULT_PREFILL_STEP_SIZE,
+        help="Number of tokens to process per prefill step. "
+        "Lower values reduce peak memory usage but may be slower. "
+        "Try 512 or 256 if you hit GPU memory errors during prefill.",
+    )
+    parser.add_argument(
         "--kv-bits",
         type=int,
         default=0,
@@ -1346,6 +1358,7 @@ def main():
     args = parser.parse_args()
     if args.trust_remote_code:
         os.environ["MLX_TRUST_REMOTE_CODE"] = "true"
+    os.environ["PREFILL_STEP_SIZE"] = str(args.prefill_step_size)
     os.environ["KV_BITS"] = str(args.kv_bits)
     os.environ["KV_GROUP_SIZE"] = str(args.kv_group_size)
     os.environ["MAX_KV_SIZE"] = str(args.max_kv_size)
