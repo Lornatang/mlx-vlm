@@ -642,9 +642,6 @@ class VisionModel(nn.Module):
         super().__init__()
 
         self.model_type = config.model_type
-        if self.model_type not in ["llava_qwen2", "fastvlm"]:
-            raise ValueError(f"Unsupported model type: {self.model_type}")
-
         self.vision_model = FastViTHDModel(config)
 
         # Replace projection head, same as in
