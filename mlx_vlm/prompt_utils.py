@@ -62,6 +62,7 @@ MODEL_CONFIG = {
     "pixtral": MessageFormat.LIST_WITH_IMAGE_TYPE_TEXT,
     "molmo2": MessageFormat.LIST_WITH_IMAGE_FIRST,
     # Token-based models
+    "jingyuvl_qwen3": MessageFormat.IMAGE_TOKEN_NEWLINE,
     "llava-qwen2": MessageFormat.IMAGE_TOKEN_NEWLINE,
     "llava_qwen2": MessageFormat.IMAGE_TOKEN_NEWLINE,  # fastvlm
     "bunny-llama": MessageFormat.IMAGE_TOKEN_NEWLINE,
