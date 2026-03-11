@@ -62,10 +62,6 @@ class Model(nn.Module):
                 inputs_embeds=self.language_model.model.embed_tokens(input_ids)
             )
 
-        # Cast pixel_values to model dtype for consistent dtype propagation
-        model_dtype = self.language_model.model.embed_tokens.weight.dtype
-        pixel_values = pixel_values.astype(model_dtype)
-
         _, image_features, _ = self.vision_tower(pixel_values.transpose(0, 2, 3, 1))
         B, H, W, C = image_features.shape
         image_features = image_features.reshape(B, H * W, C)
