@@ -35,6 +35,7 @@ MODEL_REMAPPING = {
     "cohere2_vision": "aya_vision",
     "jvlm": "jina_vlm",
     "phi4-siglip": "phi4_siglip",
+    "jingyuvl_qwen3": "jingyu_vl",
 }
 
 MAX_FILE_SIZE_GB = 5
