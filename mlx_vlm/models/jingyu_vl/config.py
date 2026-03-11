@@ -32,6 +32,7 @@ class TextConfig(BaseModelConfig):
     rope_theta: float = 1000000
     rope_traditional: bool = False
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
+    head_dim: int = 128
     tie_word_embeddings: bool = True
 
 
