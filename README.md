@@ -189,12 +189,20 @@ Start the server:
 ```sh
 mlx_vlm.server --port 8080
 
+# Preload a model at startup (Hugging Face repo or local path)
+mlx_vlm.server --model <hf_repo_or_local_path>
+
+# Preload a model with adapter
+mlx_vlm.server --model <hf_repo_or_local_path> --adapter-path <adapter_path>
+
 # With trust remote code enabled (required for some models)
 mlx_vlm.server --trust-remote-code
 ```
 
 #### Server Options
 
+- `--model`: Preload a model at server startup, accepts a Hugging Face repo ID or local path (optional, loads lazily on first request if omitted)
+- `--adapter-path`: Path for adapter weights to use with the preloaded model
 - `--host`: Host address (default: `0.0.0.0`)
 - `--port`: Port number (default: `8080`)
 - `--trust-remote-code`: Trust remote code when loading models from Hugging Face Hub
@@ -338,6 +346,9 @@ curl -X POST "http://localhost:8080/responses" \
 - `max_tokens`: Maximum tokens to generate
 - `temperature`: Sampling temperature
 - `top_p`: Top-p sampling parameter
+- `top_k`: Top-k sampling cutoff
+- `min_p`: Min-p sampling threshold
+- `repetition_penalty`: Penalty applied to repeated tokens
 - `stream`: Enable streaming responses
 
 
