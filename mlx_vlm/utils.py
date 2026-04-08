@@ -41,6 +41,7 @@ MODEL_REMAPPING = {
     "granite4_vision": "granite4_vision",
     "rf-detr": "rfdetr",
     "falcon-perception": "falcon_perception",
+    "jingyuvl_qwen3": "jingyu_vl",
 }
 
 MAX_FILE_SIZE_GB = 5
@@ -95,6 +96,7 @@ def skip_multimodal_module(path: str) -> bool:
         or "audio_tower" in path
         or "code_predictor" in path
         or "img_projector" in path
+        or "mm_projector" in path
     )
 
 
