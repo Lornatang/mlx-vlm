@@ -15,6 +15,8 @@ MLX-VLM is a package for inference and fine-tuning of Vision Language Models (VL
   - [Supported Models](#supported-models)
   - [Usage Examples](#usage-examples)
 - [Model-Specific Documentation](#model-specific-documentation)
+- [Vision Feature Caching](#vision-feature-caching)
+- [TurboQuant KV Cache](#turboquant-kv-cache)
 - [Fine-tuning](#fine-tuning)
 
 ## Model-Specific Documentation
@@ -26,11 +28,17 @@ Some models have detailed documentation with prompt formats, examples, and best 
 | DeepSeek-OCR | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/deepseekocr/README.md) |
 | DeepSeek-OCR-2 | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/deepseekocr_2/README.md) |
 | DOTS-OCR | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/dots_ocr/README.md) |
+| DOTS-MOCR | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/dots_ocr/README.md) |
 | GLM-OCR | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/glm_ocr/README.md) |
 | Phi-4 Reasoning Vision | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/phi4_siglip/README.md) |
 | MiniCPM-o | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/minicpmo/README.md) |
 | Phi-4 Multimodal | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/phi4mm/README.md) |
+| MolmoPoint | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/molmo_point/README.md) |
 | Moondream3 | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/moondream3/README.md) |
+| Gemma 4 | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/gemma4/README.md) |
+| Falcon-OCR | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/falcon_ocr/README.md) |
+| Granite Vision 3.2 | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/granite_vision/README.md) |
+| Granite 4.0 Vision | [Docs](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/granite4_vision/README.md) |
 
 ## Installation
 
@@ -39,14 +47,6 @@ The easiest way to get started is to install the `mlx-vlm` package using pip:
 ```sh
 pip install -U mlx-vlm
 ```
-
-Some models (e.g., Qwen2-VL) require additional dependencies from the `torch` extra:
-
-```sh
-pip install -U mlx-vlm[torch]
-```
-
-This installs `torch`, `torchvision`, and other dependencies needed by certain model processors.
 
 ## Usage
 
@@ -206,6 +206,8 @@ mlx_vlm.server --trust-remote-code
 - `--host`: Host address (default: `0.0.0.0`)
 - `--port`: Port number (default: `8080`)
 - `--trust-remote-code`: Trust remote code when loading models from Hugging Face Hub
+- `--kv-bits`: Number of bits for KV cache quantization (e.g. `3.5` for TurboQuant)
+- `--kv-quant-scheme`: KV cache quantization backend (`uniform` or `turboquant`)
 
 You can also set trust remote code via environment variable:
 ```sh
@@ -447,6 +449,157 @@ mlx_vlm.video_generate --model mlx-community/Qwen2-VL-2B-Instruct-4bit --max-tok
 
 
 These examples demonstrate how to use multiple images with MLX-VLM for more complex visual reasoning tasks.
+
+## Vision Feature Caching
+
+In multi-turn conversations about an image, the vision encoder runs on every turn even though the image hasn't changed. `VisionFeatureCache` stores projected vision features in an LRU cache keyed by image path, so the expensive vision encoder is only called once per unique image.
+
+### How It Works
+
+1. **First turn (cache miss)** -- `encode_image()` runs the full vision pipeline (vision tower + projector), stores the result in the cache, and passes it to the language model.
+2. **Subsequent turns (cache hit)** -- the cached features are passed directly via `cached_image_features`, skipping the vision encoder entirely.
+3. **Image switch** -- when the image changes, it's a new cache key so features are computed and cached. Switching back to a previous image is a cache hit.
+
+The cache holds up to 8 entries (configurable) and uses LRU eviction.
+
+### CLI
+
+All chat interfaces use `VisionFeatureCache` automatically:
+
+```sh
+# Gradio chat UI
+python -m mlx_vlm.chat_ui --model google/gemma-4-26b-a4b-it
+
+# Interactive chat with Rich UI (load images with /image command)
+python -m mlx_vlm.chat --model google/gemma-4-26b-a4b-it
+
+# Inline chat mode
+python -m mlx_vlm.generate \
+  --model google/gemma-4-26b-a4b-it \
+  --image path/to/image.jpg \
+  --chat \
+  --max-tokens 200
+```
+
+### Python
+
+```python
+from mlx_vlm import load, stream_generate, VisionFeatureCache
+from mlx_vlm.prompt_utils import apply_chat_template
+
+model, processor = load("google/gemma-4-26b-a4b-it")
+cache = VisionFeatureCache()
+
+image = "path/to/image.jpg"
+
+# Turn 1 -- cache miss, encodes image
+prompt1 = apply_chat_template(processor, model.config, "Describe this image.", num_images=1)
+for chunk in stream_generate(model, processor, prompt1, image=[image],
+                              max_tokens=200, vision_cache=cache):
+    print(chunk.text, end="")
+
+# Turn 2 -- cache hit, skips vision encoder
+prompt2 = apply_chat_template(processor, model.config, "What colors do you see?", num_images=1)
+for chunk in stream_generate(model, processor, prompt2, image=[image],
+                              max_tokens=200, vision_cache=cache):
+    print(chunk.text, end="")
+```
+
+### Server
+
+The server caches vision features automatically across requests for the same image. No configuration needed -- the cache is created when a model loads and cleared on unload.
+
+```sh
+mlx_vlm.server --model google/gemma-4-26b-a4b-it
+```
+
+Multi-turn conversations via `/v1/chat/completions` (streaming and non-streaming) and `/responses` all benefit. The same image sent across multiple requests will only be encoded once.
+
+### Performance
+
+Tested on `google/gemma-4-26b-a4b-it` over 10 multi-turn conversation turns:
+
+| Metric | Without Cache | With Cache |
+|--------|--------------|------------|
+| Prompt TPS | ~48 | ~550-825 |
+| Speedup | -- | **11x+** |
+| Peak Memory | 52.66 GB | 52.66 GB (flat) |
+
+Generation speed (~31 tok/s) and memory are unaffected -- only prompt processing gets faster.
+
+## TurboQuant KV Cache
+
+TurboQuant compresses the KV cache during generation, enabling longer context lengths with less memory while maintaining quality.
+
+### Quick Start
+
+```sh
+# 3.5-bit KV cache quantization (3-bit keys + 4-bit values)
+mlx_vlm generate \
+  --model mlx-community/Qwen3.5-4B-4bit \
+  --kv-bits 3.5 \
+  --kv-quant-scheme turboquant \
+  --prompt "Your long prompt here..."
+```
+
+```python
+from mlx_vlm import generate
+
+result = generate(
+    model, processor, prompt,
+    kv_bits=3.5,
+    kv_quant_scheme="turboquant",
+    max_tokens=256,
+)
+```
+
+```sh
+# Server with TurboQuant
+mlx_vlm server \
+  --model google/gemma-4-26b-a4b-it \
+  --kv-bits 3.5 \
+  --kv-quant-scheme turboquant
+```
+
+### How It Works
+
+TurboQuant uses random rotation + codebook quantization ([arXiv:2504.19874](https://arxiv.org/abs/2504.19874)) to compress KV cache entries from 16-bit to 2-4 bits per dimension:
+
+- **Keys & Values**: MSE codebook quantization with Hadamard rotation
+- **Fractional bits** (e.g. 3.5): uses lower bits for keys, higher for values (3-bit K + 4-bit V)
+
+Custom Metal kernels fuse score computation and value aggregation directly on packed quantized data, avoiding full dequantization during decode.
+
+### Performance
+
+Tested on Qwen3.5-4B-4bit at 128k context:
+
+| Metric | Baseline | TurboQuant 3.5-bit |
+|--------|----------|-------------------|
+| KV Memory | 4.1 GB | 0.97 GB (**76% reduction**) |
+| Peak Memory | 18.3 GB | 17.3 GB (**-1.0 GB**) |
+
+At 512k+ contexts, TurboQuant's per-layer attention is **faster than FP16 SDPA** due to reduced memory bandwidth requirements.
+
+Tested on gemma-4-31b-it at 128k context:
+
+| Metric | Baseline | TurboQuant 3.5-bit |
+|--------|----------|-------------------|
+| KV Memory | 13.3 GB | 4.9 GB (**63% reduction**) |
+| Peak Memory | 75.2 GB | 65.8 GB (**-9.4 GB**) |
+
+### Supported Bit Widths
+
+| Bits | Compression | Best For |
+|------|------------|----------|
+| 2 | ~8x | Maximum compression, some quality loss |
+| 3 | ~5x | Good balance of quality and compression |
+| 3.5 | ~4.5x | Recommended default (3-bit keys + 4-bit values) |
+| 4 | ~4x | Best quality, moderate compression |
+
+### Compatibility
+
+TurboQuant automatically quantizes `KVCache` layers (global attention). Models with `RotatingKVCache` (sliding window) or `ArraysCache` (MLA/absorbed keys) keep their native cache format for those layers since they are already memory-efficient.
 
 # Fine-tuning
 
