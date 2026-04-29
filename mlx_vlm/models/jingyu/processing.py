@@ -505,7 +505,7 @@ class FastVLMProcessor(ProcessorMixin):
         )
 
 
-install_auto_processor_patch(["jingyu_vl", "jingyuvl_qwen3"], FastVLMProcessor)
+install_auto_processor_patch("jingyu", FastVLMProcessor)
 
 
 __all__ = ["FastVLMImageProcessor", "FastVLMProcessor"]

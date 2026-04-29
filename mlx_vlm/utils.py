@@ -40,8 +40,7 @@ MODEL_REMAPPING = {
     "granite4-vision": "granite4_vision",
     "granite4_vision": "granite4_vision",
     "rf-detr": "rfdetr",
-    "falcon-perception": "falcon_perception",
-    "jingyuvl_qwen3": "jingyu_vl",
+    "falcon-perception": "falcon_perception"
 }
 
 MAX_FILE_SIZE_GB = 5

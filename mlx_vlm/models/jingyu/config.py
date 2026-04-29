@@ -38,7 +38,7 @@ class TextConfig(BaseModelConfig):
 
 @dataclass
 class VisionConfig(BaseModelConfig):
-    model_type: str = "jingyuvl_qwen3"
+    model_type: str = "jingyu"
     hidden_size: int = 1024
     intermediate_size: int = 3072
     image_size: int = 1024
@@ -63,7 +63,7 @@ class VisionConfig(BaseModelConfig):
 class ModelConfig(BaseModelConfig):
     text_config: TextConfig
     vision_config: VisionConfig
-    model_type: str = "jingyuvl_qwen3"
+    model_type: str = "jingyu"
     ignore_index: int = -100
     image_token_index: int = -200
     eos_token_id: int = 151645
