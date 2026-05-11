@@ -99,6 +99,7 @@ def skip_multimodal_module(path: str) -> bool:
         "code_predictor",
         "img_projector",
         "multi_modal_projector",
+        "mm_projector",
     )
     return any(module in path for module in multimodal_modules)
 
