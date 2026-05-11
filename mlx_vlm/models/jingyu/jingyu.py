@@ -62,6 +62,10 @@ class Model(nn.Module):
                 inputs_embeds=self.language_model.model.embed_tokens(input_ids)
             )
 
+        patch_embed = self.vision_tower.vision_model.patch_embed
+        model_dtype = patch_embed.blocks[0].reparam_conv.weight.dtype
+        pixel_values = pixel_values.astype(model_dtype)
+
         _, image_features, _ = self.vision_tower(pixel_values.transpose(0, 2, 3, 1))
         B, H, W, C = image_features.shape
         image_features = image_features.reshape(B, H * W, C)
