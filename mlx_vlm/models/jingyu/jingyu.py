@@ -212,8 +212,6 @@ class Model(nn.Module):
                     key = key.replace("model.vision_tower.vision_tower.backbone.", "vision_tower.vision_model.")
                     key = key.replace("patch_embed.", "patch_embed.blocks.")
                 return key
-            if "lm_head" in key:
-                return key
             if "mm_projector" in key:
                 return key.replace("model.", "")
             if "language_model" not in key:
