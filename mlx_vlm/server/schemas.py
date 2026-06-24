@@ -1,7 +1,7 @@
 import os
 from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Required, TypeAlias, TypedDict
 
 if TYPE_CHECKING:
@@ -9,7 +9,6 @@ if TYPE_CHECKING:
 
 from ..generate import (
     DEFAULT_MAX_TOKENS,
-    DEFAULT_MODEL_PATH,
     DEFAULT_SEED,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
@@ -61,6 +60,17 @@ class ImageGenerationRequest(FlexibleBaseModel):
         DEFAULT_IMAGE_GUIDANCE,
         description="Classifier-free guidance scale.",
     )
+    auto_json_caption: Optional[bool] = Field(
+        None,
+        description="For Ideogram 4, wrap plain prompts into JSON captions.",
+    )
+    prompt_expansion_model: Optional[str] = Field(
+        None,
+        description=(
+            "Text model path or Hugging Face repo used to expand plain "
+            "Ideogram 4 prompts into structured JSON captions."
+        ),
+    )
     response_format: Literal["b64_json", "path"] = Field(
         "b64_json",
         description="Return base64 PNG data or write files and return local paths.",
@@ -94,6 +104,79 @@ class ImageGenerationResponseData(BaseModel):
 class ImageGenerationResponse(BaseModel):
     created: int
     data: List[ImageGenerationResponseData]
+    output_format: Literal["png"] = "png"
+    size: str
+
+
+class ImageEditRequest(FlexibleBaseModel):
+    prompt: str = Field(..., description="Text prompt for image editing.")
+    image: Union[str, List[str]] = Field(
+        ..., description="Local path or paths of reference images."
+    )
+    model: str = Field(..., description="Image edit model name or local snapshot path.")
+    n: int = Field(1, ge=1, le=10, description="Number of images to generate.")
+    size: Optional[str] = Field(
+        None,
+        description="Edited image size as WIDTHxHEIGHT. Width/height fields override this.",
+    )
+    width: Optional[int] = Field(None, description="Edited image width.")
+    height: Optional[int] = Field(None, description="Edited image height.")
+    steps: int = Field(
+        DEFAULT_IMAGE_STEPS,
+        ge=1,
+        description="Number of image edit inference steps.",
+    )
+    seed: Optional[int] = Field(
+        None,
+        description="Base seed. Multiple outputs use (seed + i) values.",
+    )
+    guidance: float = Field(
+        DEFAULT_IMAGE_GUIDANCE,
+        description="Classifier-free guidance scale.",
+    )
+    response_format: Literal["b64_json", "path"] = Field(
+        "b64_json",
+        description="Return base64 PNG data or write files and return local paths.",
+    )
+    output_format: Literal["png"] = Field(
+        "png", description="Output image format. Only PNG is currently supported."
+    )
+    output_path: Optional[str] = Field(
+        None,
+        description="Output file path. For n>1, an index is added to the stem.",
+    )
+    output_dir: Optional[str] = Field(
+        None,
+        description="Output directory for path responses.",
+    )
+    user: Optional[str] = Field(
+        None, description="OpenAI-compatible user identifier; currently ignored."
+    )
+
+    @field_validator("image")
+    @classmethod
+    def validate_image(cls, value):
+        images = [value] if isinstance(value, str) else list(value)
+        if not images:
+            raise ValueError("At least one image is required.")
+        if not all(isinstance(item, str) and item for item in images):
+            raise ValueError("Image paths must be non-empty strings.")
+        return value
+
+
+class ImageEditResponseData(BaseModel):
+    b64_json: Optional[str] = None
+    path: Optional[str] = None
+    revised_prompt: Optional[str] = None
+    mime_type: str = "image/png"
+    width: int
+    height: int
+    seed: int
+
+
+class ImageEditResponse(BaseModel):
+    created: int
+    data: List[ImageEditResponseData]
     output_format: Literal["png"] = "png"
     size: str
 
@@ -182,8 +265,15 @@ class ChatMessage(FlexibleBaseModel):
         ResponseInputMessageContentListParam,
         ResponseOutputMessageContentList,
     ] = Field(None, description="Content of the message.")
+    reasoning_content: Optional[str] = Field(
+        None,
+        description="Thinking/reasoning content (when thinking is enabled).",
+    )
     reasoning: Optional[str] = Field(
-        None, description="Thinking/reasoning content (when thinking is enabled)."
+        None,
+        description=(
+            "Deprecated alias for reasoning_content, kept for backward compatibility."
+        ),
     )
     tool_calls: Optional[List[Any]] = Field(
         None, description="Tool calls made by the assistant."
@@ -192,6 +282,14 @@ class ChatMessage(FlexibleBaseModel):
         None, description="ID of the tool call this message is a response to."
     )
     name: Optional[str] = Field(None, description="Name of the tool/function.")
+
+    @model_validator(mode="after")
+    def sync_reasoning_aliases(self):
+        if self.reasoning_content is None and self.reasoning is not None:
+            self.reasoning_content = self.reasoning
+        elif self.reasoning is None and self.reasoning_content is not None:
+            self.reasoning = self.reasoning_content
+        return self
 
 
 class OpenAIRequest(FlexibleBaseModel):
@@ -204,6 +302,9 @@ class OpenAIRequest(FlexibleBaseModel):
         ..., description="Input text or list of chat messages."
     )
     model: str = Field(..., description="The model to use for generation.")
+    adapter_path: Optional[str] = Field(
+        None, description="The path to the adapter weights."
+    )
     max_output_tokens: int = Field(
         default_factory=get_server_max_tokens,
         description="Maximum number of tokens to generate.",
@@ -506,7 +607,7 @@ StreamEvent = Union[
 
 class VLMRequest(FlexibleBaseModel):
     model: str = Field(
-        DEFAULT_MODEL_PATH,
+        ...,
         description="The path to the local model directory or Hugging Face repo.",
     )
     adapter_path: Optional[str] = Field(
