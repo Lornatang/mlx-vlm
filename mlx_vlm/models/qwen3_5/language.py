@@ -3,8 +3,8 @@ from typing import Any, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.activations import swiglu
 
+from ..activations import swiglu
 from ..base import (
     LanguageModelOutput,
     create_attention_mask,
@@ -1994,44 +1994,45 @@ class LanguageModel(nn.Module):
                 valid_ends_mx = mx.array(valid_ends_list, dtype=mx.int32)
             return valid_ends_mx
 
-        # Separate trimmable (KV) caches from SSM caches.
+        def _is_ssm_cache(c):
+            return not c.is_trimmable() and not hasattr(c, "zero_row_tail")
+
         ssm_caches = []
         for c in caches:
             if c is None:
                 continue
-            if c.is_trimmable():
-                if trim > 0:
-                    c.trim(trim)
-                right_trimmed = False
-                if is_batch and max_a > 0:
-                    extra_trim_list = [max_a - a for a in accepted_list]
-                    if any(extra_trim_list):
-                        prepare = getattr(c, "prepare", None)
-                        finalize = getattr(c, "finalize", None)
-                        if (
-                            c.keys is not None
-                            and callable(prepare)
-                            and callable(finalize)
-                        ):
-                            prepare(right_padding=extra_trim_list)
-                            finalize()
-                            right_trimmed = True
-                if (
-                    is_batch
-                    and not right_trimmed
-                    and hasattr(c, "_idx")
-                    and c.keys is not None
-                    and max_a > 0
-                ):
-                    kv_len = c._idx
-                    verify_start = kv_len - n
-                    for bi, ve in enumerate(valid_ends_list):
-                        start = verify_start + ve
-                        if start < kv_len:
+            if _is_ssm_cache(c):
+                ssm_caches.append(c)
+                continue
+            if c.is_trimmable() and trim > 0:
+                c.trim(trim)
+            right_trimmed = False
+            if is_batch and max_a > 0:
+                extra_trim_list = [max_a - a for a in accepted_list]
+                if any(extra_trim_list):
+                    prepare = getattr(c, "prepare", None)
+                    finalize = getattr(c, "finalize", None)
+                    if c.keys is not None and callable(prepare) and callable(finalize):
+                        prepare(right_padding=extra_trim_list)
+                        finalize()
+                        right_trimmed = True
+            if (
+                is_batch
+                and not right_trimmed
+                and hasattr(c, "_idx")
+                and c.keys is not None
+                and max_a > 0
+            ):
+                kv_len = c._idx
+                verify_start = kv_len - n
+                for bi, ve in enumerate(valid_ends_list):
+                    start = verify_start + ve
+                    if start < kv_len:
+                        if hasattr(c, "zero_row_tail"):
+                            c.zero_row_tail(bi, start, kv_len)
+                        else:
                             c.keys[bi, :, start:kv_len, :] = 0
                             c.values[bi, :, start:kv_len, :] = 0
-            else:
-                ssm_caches.append(c)
 
         if not ssm_caches:
             return max_a
@@ -2362,6 +2363,10 @@ class LanguageModel(nn.Module):
 
                     llm_pos_ids_list.append(t_index + st_idx)
 
+                if not llm_pos_ids_list:
+                    mrope_position_deltas.append(0)
+                    continue
+
                 llm_positions = mx.concatenate(llm_pos_ids_list, axis=1).reshape(3, -1)
                 compact_max_position = llm_positions.max()
                 padded_positions = [[1] * total_input_ids.shape[1] for _ in range(3)]
@@ -2543,6 +2548,15 @@ class LanguageModel(nn.Module):
                 position_ids = mx.arange(seq_length).reshape(1, -1)
                 position_ids = mx.broadcast_to(position_ids, (batch_size, seq_length))
                 position_ids = mx.add(position_ids, delta)
+                if (
+                    rope_deltas_kw is not None
+                    or self._position_ids is not None
+                    and self._position_ids.ndim == 3
+                ):
+                    position_ids = position_ids[None, ...]
+                    position_ids = mx.broadcast_to(
+                        position_ids, (3, batch_size, seq_length)
+                    )
 
         hidden_sink: Optional[List[mx.array]] = (
             [] if capture_layer_ids is not None else None
