@@ -15,14 +15,9 @@ from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from mlx_lm.models.qwen3 import Qwen3Model
 
-from ..base import (
-    LanguageModelOutput,
-    create_attention_mask,
-    scaled_dot_product_attention,
-)
+from ..base import LanguageModelOutput
 from .config import TextConfig
 
 
@@ -30,6 +25,7 @@ class LanguageModel(nn.Module):
     def __init__(self, config: TextConfig):
         super().__init__()
         self.config = config
+        self.args = config
         self.model_type = config.model_type
         self.model = Qwen3Model(config)
         if not config.tie_word_embeddings:
@@ -37,12 +33,18 @@ class LanguageModel(nn.Module):
 
     def __call__(
         self,
-        inputs: mx.array,
-        mask: mx.array = None,
+        inputs: Optional[mx.array],
+        mask: Optional[mx.array] = None,
         cache=None,
         inputs_embeds: Optional[mx.array] = None,
         **kwargs,
     ) -> LanguageModelOutput:
+        if inputs_embeds is None:
+            inputs_embeds = kwargs.pop("input_embeddings", None)
+
+        if inputs is None and inputs_embeds is None:
+            raise ValueError("Either `inputs` or `inputs_embeds` must be provided.")
+
         out = self.model(inputs, cache=cache, input_embeddings=inputs_embeds)
         if self.config.tie_word_embeddings:
             out = self.model.embed_tokens.as_linear(out)
@@ -51,10 +53,15 @@ class LanguageModel(nn.Module):
         return LanguageModelOutput(out)
 
     def sanitize(self, weights):
+        weights = dict(weights)
         if self.config.tie_word_embeddings:
-            # Model.sanitize prepends "language_model." to top-level lm_head.weight.
             weights.pop("language_model.lm_head.weight", None)
-        return {k: v for k, v in weights.items() if "self_attn.rotary_emb.inv_freq" not in k}
+            weights.pop("lm_head.weight", None)
+        return {
+            k: v
+            for k, v in weights.items()
+            if "self_attn.rotary_emb.inv_freq" not in k
+        }
 
     @property
     def layers(self):
@@ -62,8 +69,8 @@ class LanguageModel(nn.Module):
 
     @property
     def head_dim(self):
-        return self.args.hidden_size // self.args.num_attention_heads
+        return self.config.hidden_size // self.config.num_attention_heads
 
     @property
     def n_kv_heads(self):
-        return self.args.num_key_value_heads
+        return self.config.num_key_value_heads
