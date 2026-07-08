@@ -604,6 +604,80 @@ class TestModels(unittest.TestCase):
         self.assertTrue(mx.all(mx.isfinite(logits)).item())
         mx.eval([c.state for c in cache])
 
+    def test_nemotron_h_language_model(self):
+        from mlx_vlm.models import nemotron_h
+
+        config = nemotron_h.ModelConfig(
+            model_type="nemotron_h",
+            vocab_size=128,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=4,
+            max_position_embeddings=128,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            attention_bias=False,
+            mamba_num_heads=4,
+            mamba_head_dim=16,
+            mamba_proj_bias=False,
+            ssm_state_size=32,
+            conv_kernel=4,
+            n_groups=2,
+            mlp_bias=False,
+            layer_norm_epsilon=1e-5,
+            use_bias=False,
+            use_conv_bias=True,
+            hybrid_override_pattern=["M", "*", "-", "E"],
+            moe_intermediate_size=32,
+            n_group=1,
+            n_routed_experts=4,
+            n_shared_experts=1,
+            moe_shared_expert_intermediate_size=32,
+            topk_group=1,
+            num_experts_per_tok=2,
+            norm_topk_prob=True,
+            routed_scaling_factor=1.0,
+        )
+
+        model = nemotron_h.Model(config)
+
+        self.language_test_runner(
+            model.language_model,
+            config.model_type,
+            config.vocab_size,
+            config.num_hidden_layers,
+        )
+
+        inputs = mx.array([[1, 2, 3]])
+        embeddings = model.get_input_embeddings(inputs)
+        self.assertEqual(embeddings.inputs_embeds.shape, (1, 3, config.hidden_size))
+
+        cache = model.make_cache()
+        self.assertEqual(len(cache), 2)
+        self.assertEqual(type(cache[0]).__name__, "ArraysCache")
+        self.assertEqual(type(cache[1]).__name__, "KVCache")
+
+        sanitized = model.sanitize(
+            {"backbone.embeddings.weight": mx.zeros((config.vocab_size, 64))}
+        )
+        self.assertIn("language_model.backbone.embeddings.weight", sanitized)
+
+        prefixed = {
+            "language_model.backbone.embeddings.weight": mx.zeros(
+                (config.vocab_size, 64)
+            )
+        }
+        self.assertIs(model.sanitize(prefixed), prefixed)
+
+        prompt = mx.array([[1, 2, 3, 4, 5, 6, 7, 8]])
+        logits = model(prompt, cache=cache).logits
+        self.assertEqual(logits.shape, (1, 8, config.vocab_size))
+
+        nxt = mx.argmax(logits[:, -1:, :], axis=-1)
+        logits = model(nxt, cache=cache).logits
+        self.assertEqual(logits.shape, (1, 1, config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(logits)).item())
+
     def test_deepseek_v3_language_model(self):
         from mlx_vlm.models import deepseek_v3
 
@@ -765,6 +839,265 @@ class TestModels(unittest.TestCase):
 
         logits = model(mx.array([[1, 2, 3, 4]])).logits
         self.assertEqual(logits.shape, (1, 4, config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(logits)).item())
+
+    def test_gemma3_text_language_model(self):
+        from mlx_vlm.models import gemma3_text
+
+        config = gemma3_text.ModelConfig.from_dict(
+            {
+                "model_type": "gemma3_text",
+                "hidden_size": 64,
+                "num_hidden_layers": 6,
+                "intermediate_size": 128,
+                "num_attention_heads": 4,
+                "head_dim": 16,
+                "rms_norm_eps": 1e-6,
+                "vocab_size": 128,
+                "num_key_value_heads": 2,
+                "rope_global_base_freq": 1000000.0,
+                "rope_local_base_freq": 10000.0,
+                "query_pre_attn_scalar": 16,
+                "sliding_window": 8,
+                "sliding_window_pattern": 3,
+                "max_position_embeddings": 256,
+            }
+        )
+
+        model = gemma3_text.Model(config)
+
+        self.language_test_runner(
+            model.language_model,
+            config.model_type,
+            config.vocab_size,
+            config.num_hidden_layers,
+        )
+
+        cache = model.language_model.make_cache()
+        self.assertEqual(len(cache), config.num_hidden_layers)
+        self.assertEqual(type(cache[0]).__name__, "RotatingKVCache")
+        self.assertEqual(type(cache[2]).__name__, "KVCache")
+        self.assertEqual(type(cache[5]).__name__, "KVCache")
+
+        inputs = mx.array([[1, 2, 3]])
+        embeddings = model.get_input_embeddings(inputs)
+        self.assertEqual(embeddings.inputs_embeds.shape, (1, 3, config.hidden_size))
+
+        sanitized = model.sanitize(
+            {"model.embed_tokens.weight": mx.zeros((config.vocab_size, 64))}
+        )
+        self.assertIn("language_model.model.embed_tokens.weight", sanitized)
+        self.assertIn("language_model.lm_head.weight", sanitized)
+
+        resanitized = model.sanitize(dict(sanitized))
+        self.assertEqual(set(resanitized), set(sanitized))
+
+        logits = model(mx.array([[1, 2, 3, 4] * 4]), cache=cache).logits
+        self.assertEqual(logits.shape, (1, 16, config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(logits)).item())
+
+        nxt = mx.argmax(logits[:, -1:, :], axis=-1)
+        logits = model(nxt, cache=cache).logits
+        self.assertEqual(logits.shape, (1, 1, config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(logits)).item())
+
+    def test_llama_language_model(self):
+        from mlx_vlm.models import llama
+
+        config = llama.ModelConfig(
+            model_type="llama",
+            hidden_size=64,
+            num_hidden_layers=2,
+            intermediate_size=128,
+            num_attention_heads=4,
+            rms_norm_eps=1e-5,
+            vocab_size=128,
+            num_key_value_heads=2,
+            max_position_embeddings=256,
+            rope_theta=500000,
+            rope_scaling={
+                "rope_type": "llama3",
+                "factor": 8.0,
+                "high_freq_factor": 4.0,
+                "low_freq_factor": 1.0,
+                "original_max_position_embeddings": 128,
+            },
+            tie_word_embeddings=True,
+        )
+
+        model = llama.Model(config)
+
+        self.language_test_runner(
+            model.language_model,
+            config.model_type,
+            config.vocab_size,
+            config.num_hidden_layers,
+        )
+
+        inputs = mx.array([[1, 2, 3]])
+        embeddings = model.get_input_embeddings(inputs)
+        self.assertEqual(embeddings.inputs_embeds.shape, (1, 3, config.hidden_size))
+
+        sanitized = model.sanitize(
+            {
+                "model.embed_tokens.weight": mx.zeros((config.vocab_size, 64)),
+                "model.layers.0.self_attn.rotary_emb.inv_freq": mx.zeros(8),
+            }
+        )
+        self.assertIn("language_model.model.embed_tokens.weight", sanitized)
+        self.assertNotIn(
+            "language_model.model.layers.0.self_attn.rotary_emb.inv_freq", sanitized
+        )
+
+        prefixed = {
+            "language_model.model.embed_tokens.weight": mx.zeros(
+                (config.vocab_size, 64)
+            )
+        }
+        self.assertIs(model.sanitize(prefixed), prefixed)
+
+        logits = model(mx.array([[1, 2, 3, 4]])).logits
+        self.assertEqual(logits.shape, (1, 4, config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(logits)).item())
+
+        sliding_config = llama.ModelConfig(
+            model_type="llama",
+            hidden_size=64,
+            num_hidden_layers=2,
+            intermediate_size=128,
+            num_attention_heads=4,
+            rms_norm_eps=1e-5,
+            vocab_size=128,
+            num_key_value_heads=2,
+            layer_types=["sliding_attention", "full_attention"],
+            sliding_window=16,
+            tie_word_embeddings=True,
+        )
+        sliding_model = llama.Model(sliding_config)
+        cache = sliding_model.language_model.make_cache()
+        self.assertEqual(type(cache[0]).__name__, "RotatingKVCache")
+        self.assertEqual(type(cache[1]).__name__, "KVCache")
+
+        cached_logits = sliding_model(mx.array([[1, 2, 3, 4] * 8]), cache=cache).logits
+        self.assertEqual(cached_logits.shape, (1, 32, sliding_config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(cached_logits)).item())
+
+    def test_mistral_language_model(self):
+        from mlx_vlm.models import llama
+
+        config = llama.ModelConfig.from_dict(
+            {
+                "model_type": "mistral",
+                "hidden_size": 64,
+                "num_hidden_layers": 2,
+                "intermediate_size": 128,
+                "num_attention_heads": 4,
+                "rms_norm_eps": 1e-5,
+                "vocab_size": 128,
+                "num_key_value_heads": 2,
+                "max_position_embeddings": 256,
+                "rope_theta": 10000.0,
+                "sliding_window": 4096,
+                "head_dim": 16,
+                "tie_word_embeddings": False,
+            }
+        )
+
+        self.assertEqual(config.layer_types, ["full_attention"] * 2)
+
+        model = llama.Model(config)
+
+        self.language_test_runner(
+            model.language_model,
+            config.model_type,
+            config.vocab_size,
+            config.num_hidden_layers,
+        )
+
+        kept = model.sanitize({"lm_head.weight": mx.zeros((config.vocab_size, 64))})
+        self.assertIn("language_model.lm_head.weight", kept)
+
+        logits = model(mx.array([[1, 2, 3, 4]])).logits
+        self.assertEqual(logits.shape, (1, 4, config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(logits)).item())
+
+    def test_qwen3_language_model(self):
+        from mlx_vlm.models import qwen3
+
+        config = qwen3.ModelConfig(
+            model_type="qwen3",
+            hidden_size=64,
+            num_hidden_layers=2,
+            intermediate_size=128,
+            num_attention_heads=4,
+            rms_norm_eps=1e-6,
+            vocab_size=128,
+            num_key_value_heads=2,
+            max_position_embeddings=256,
+            rope_theta=1000000,
+            head_dim=32,
+            tie_word_embeddings=True,
+        )
+
+        model = qwen3.Model(config)
+
+        self.language_test_runner(
+            model.language_model,
+            config.model_type,
+            config.vocab_size,
+            config.num_hidden_layers,
+        )
+
+        attn = model.language_model.model.layers[0].self_attn
+        self.assertEqual(attn.q_norm.weight.shape, (config.head_dim,))
+        self.assertEqual(attn.k_norm.weight.shape, (config.head_dim,))
+        self.assertEqual(attn.q_proj.weight.shape[0], config.head_dim * 4)
+
+        inputs = mx.array([[1, 2, 3]])
+        embeddings = model.get_input_embeddings(inputs)
+        self.assertEqual(embeddings.inputs_embeds.shape, (1, 3, config.hidden_size))
+
+        sanitized = model.sanitize(
+            {
+                "model.embed_tokens.weight": mx.zeros((config.vocab_size, 64)),
+                "lm_head.weight": mx.zeros((config.vocab_size, 64)),
+            }
+        )
+        self.assertIn("language_model.model.embed_tokens.weight", sanitized)
+        self.assertNotIn("language_model.lm_head.weight", sanitized)
+
+        prefixed = {
+            "language_model.model.embed_tokens.weight": mx.zeros(
+                (config.vocab_size, 64)
+            )
+        }
+        self.assertIs(model.sanitize(prefixed), prefixed)
+
+        logits = model(mx.array([[1, 2, 3, 4]])).logits
+        self.assertEqual(logits.shape, (1, 4, config.vocab_size))
+        self.assertTrue(mx.all(mx.isfinite(logits)).item())
+
+        untied = qwen3.ModelConfig(
+            model_type="qwen3",
+            hidden_size=64,
+            num_hidden_layers=2,
+            intermediate_size=128,
+            num_attention_heads=4,
+            rms_norm_eps=1e-6,
+            vocab_size=128,
+            num_key_value_heads=2,
+            max_position_embeddings=256,
+            rope_theta=1000000,
+            head_dim=32,
+            tie_word_embeddings=False,
+        )
+        untied_model = qwen3.Model(untied)
+        kept = untied_model.sanitize(
+            {"lm_head.weight": mx.zeros((untied.vocab_size, 64))}
+        )
+        self.assertIn("language_model.lm_head.weight", kept)
+        logits = untied_model(mx.array([[1, 2, 3, 4]])).logits
+        self.assertEqual(logits.shape, (1, 4, untied.vocab_size))
         self.assertTrue(mx.all(mx.isfinite(logits)).item())
 
     def test_llava_bunny(self):
@@ -3427,6 +3760,33 @@ class TestModels(unittest.TestCase):
         )
         model = gemma4.Model(config)
 
+        sanitize_model = gemma4.Model(config)
+        sanitized = sanitize_model.sanitize(
+            {
+                "model.language_model.layers.0.self_attn.q_proj.weight": mx.zeros(
+                    (32, 32), dtype=mx.bfloat16
+                ),
+                "model.language_model.layers.0.self_attn.q_proj.scales": mx.zeros(
+                    (32,), dtype=mx.bfloat16
+                ),
+                "model.vision_tower.layers.0.self_attn.q_proj.weight": mx.zeros(
+                    (32, 32), dtype=mx.bfloat16
+                ),
+            }
+        )
+        self.assertEqual(
+            sanitized["language_model.model.layers.0.self_attn.q_proj.weight"].dtype,
+            mx.float32,
+        )
+        self.assertEqual(
+            sanitized["language_model.model.layers.0.self_attn.q_proj.scales"].dtype,
+            mx.bfloat16,
+        )
+        self.assertEqual(
+            sanitized["vision_tower.layers.0.self_attn.q_proj.weight"].dtype,
+            mx.bfloat16,
+        )
+
         self.language_test_runner(
             model.language_model,
             config.text_config.model_type,
@@ -3495,6 +3855,19 @@ class TestModels(unittest.TestCase):
             output = tiny_tower(mx.array(data["pixel_values"]))
             mx.eval(output)
             self.assertEqual(output.shape[1], soft_tokens[0])
+
+        patch_dim = 3 * vision_config.patch_size**2
+        patch_positions = mx.array([[[0, 0], [1, 0], [0, 1], [1, 1]]])
+        patch_values = mx.ones((1, 4, patch_dim)) * 0.5
+        output = tiny_tower(patch_values, patch_positions)
+        mx.eval(output)
+        self.assertEqual(output.shape, (1, 1, vision_config.hidden_size))
+
+        video_patch_values = mx.ones((1, 2, 4, patch_dim)) * 0.5
+        video_patch_positions = mx.array([[[[0, 0], [1, 0], [0, 1], [1, 1]]] * 2])
+        output = tiny_tower(video_patch_values, video_patch_positions)
+        mx.eval(output)
+        self.assertEqual(output.shape, (1, 2, vision_config.hidden_size))
 
         image_token, image_token_id = "<image>", 100
         tokenizer_kwargs = []
@@ -3631,6 +4004,70 @@ class TestModels(unittest.TestCase):
         self.assertEqual(
             output.logits.shape,
             (1, 6, config_with_audio.text_config.vocab_size),
+        )
+
+        hf_audio_weights = model_audio.sanitize(
+            {
+                "audio_tower.subsample_conv_projection.layer0.conv.weight": mx.zeros(
+                    (8, 1, 3, 3)
+                ),
+                "audio_tower.subsample_conv_projection.layer1.conv.weight": mx.zeros(
+                    (4, 8, 3, 3)
+                ),
+                "audio_tower.layers.0.lconv1d.depthwise_conv1d.weight": mx.zeros(
+                    (32, 1, 3)
+                ),
+            }
+        )
+        self.assertEqual(
+            hf_audio_weights[
+                "audio_tower.subsample_conv_projection.layer0.conv.weight"
+            ].shape,
+            (8, 3, 3, 1),
+        )
+        self.assertEqual(
+            hf_audio_weights[
+                "audio_tower.subsample_conv_projection.layer1.conv.weight"
+            ].shape,
+            (4, 3, 3, 8),
+        )
+        self.assertEqual(
+            hf_audio_weights[
+                "audio_tower.layers.0.lconv1d.depthwise_conv1d.weight"
+            ].shape,
+            (32, 3, 1),
+        )
+
+        mlx_audio_weights = model_audio.sanitize(
+            {
+                "audio_tower.subsample_conv_projection.layer0.conv.weight": mx.zeros(
+                    (8, 3, 3, 1)
+                ),
+                "audio_tower.subsample_conv_projection.layer1.conv.weight": mx.zeros(
+                    (4, 3, 3, 8)
+                ),
+                "audio_tower.layers.0.lconv1d.depthwise_conv1d.weight": mx.zeros(
+                    (32, 3, 1)
+                ),
+            }
+        )
+        self.assertEqual(
+            mlx_audio_weights[
+                "audio_tower.subsample_conv_projection.layer0.conv.weight"
+            ].shape,
+            (8, 3, 3, 1),
+        )
+        self.assertEqual(
+            mlx_audio_weights[
+                "audio_tower.subsample_conv_projection.layer1.conv.weight"
+            ].shape,
+            (4, 3, 3, 8),
+        )
+        self.assertEqual(
+            mlx_audio_weights[
+                "audio_tower.layers.0.lconv1d.depthwise_conv1d.weight"
+            ].shape,
+            (32, 3, 1),
         )
 
         shared_text_config = gemma4.TextConfig(
@@ -8822,3 +9259,139 @@ class TestQuantizedKVCacheMask(unittest.TestCase):
 
         # The quantized path must actually have been exercised.
         self.assertIsInstance(cache[1].keys, tuple)
+
+
+class TestQwen35NormSanitization(unittest.TestCase):
+    _HF_VL_KEY = "model.language_model.layers.0.input_layernorm.weight"
+    _HF_TEXT_KEY = "model.layers.0.input_layernorm.weight"
+    _MLX_KEY = "language_model.model.layers.0.input_layernorm.weight"
+
+    def _sanitize(self, module, key):
+        stub = SimpleNamespace(
+            config=SimpleNamespace(
+                text_config=SimpleNamespace(
+                    tie_word_embeddings=False, num_hidden_layers=0
+                )
+            ),
+        )
+        return module.Model.sanitize(stub, {key: mx.zeros(4)})
+
+    def test_qwen3_5_shifts_hf_vl_norm_weights(self):
+        from mlx_vlm.models import qwen3_5
+
+        out = self._sanitize(qwen3_5, self._HF_VL_KEY)
+        self.assertTrue(mx.allclose(out[self._MLX_KEY], mx.ones(4)).item())
+
+    def test_qwen3_5_shifts_hf_text_norm_weights(self):
+        from mlx_vlm.models import qwen3_5
+
+        out = self._sanitize(qwen3_5, self._HF_TEXT_KEY)
+        self.assertTrue(mx.allclose(out[self._HF_TEXT_KEY], mx.ones(4)).item())
+
+    def test_qwen3_5_preserves_mlx_norm_weights(self):
+        from mlx_vlm.models import qwen3_5
+
+        out = self._sanitize(qwen3_5, self._MLX_KEY)
+        self.assertTrue(mx.allclose(out[self._MLX_KEY], mx.zeros(4)).item())
+
+    def test_qwen3_5_moe_shifts_hf_vl_norm_weights(self):
+        from mlx_vlm.models import qwen3_5_moe
+
+        out = self._sanitize(qwen3_5_moe, self._HF_VL_KEY)
+        self.assertTrue(mx.allclose(out[self._MLX_KEY], mx.ones(4)).item())
+
+    def test_qwen3_5_moe_preserves_mlx_norm_weights(self):
+        from mlx_vlm.models import qwen3_5_moe
+
+        out = self._sanitize(qwen3_5_moe, self._MLX_KEY)
+        self.assertTrue(mx.allclose(out[self._MLX_KEY], mx.zeros(4)).item())
+
+
+class TestQwenMRoPEDecodeContinuation(unittest.TestCase):
+    """Regression tests for MRoPE decode positions in plain generation.
+
+    ``generate()`` forwards ``position_ids``/``rope_deltas`` (computed by
+    ``get_input_embeddings``) only with the prefill call; decode steps reach
+    the language model with no position kwargs. The language model must
+    persist the prefill ``rope_deltas`` so decode positions continue in the
+    compressed MRoPE space instead of restarting from a single-token
+    recalculation (#1505, #1526).
+    """
+
+    def _tiny_qwen3_vl(self):
+        from mlx_vlm.models import qwen3_vl
+
+        text_config = qwen3_vl.TextConfig(
+            model_type="qwen3_vl_text",
+            hidden_size=64,
+            num_hidden_layers=2,
+            intermediate_size=128,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-5,
+            head_dim=16,
+            vocab_size=1000,
+            rope_theta=1000,
+            max_position_embeddings=1000,
+            tie_word_embeddings=False,
+            norm_topk_prob=True,
+            rope_scaling={"rope_type": "mrope", "mrope_section": [4, 2, 2]},
+        )
+        vision_config = qwen3_vl.VisionConfig(
+            model_type="qwen3_vl",
+            depth=2,
+            hidden_size=64,
+            intermediate_size=128,
+            out_hidden_size=64,
+            num_heads=4,
+            patch_size=14,
+            in_channels=3,
+            spatial_merge_size=2,
+            temporal_patch_size=2,
+            num_position_embeddings=144,
+            deepstack_visual_indexes=[],
+        )
+        config = qwen3_vl.ModelConfig(
+            text_config=text_config,
+            vision_config=vision_config,
+            model_type="qwen3_vl",
+            image_token_id=998,
+            video_token_id=999,
+            vocab_size=1000,
+        )
+        return qwen3_vl.Model(config).language_model
+
+    def _decode_logits(self, lm, with_delta_kwarg):
+        from mlx_vlm.models import cache as cache_mod
+
+        lm._rope_deltas = None
+        lm._position_ids = None
+        prompt_cache = cache_mod.make_prompt_cache(lm)
+
+        ids = mx.array([[3, 5, 7, 11, 13, 17]])
+        # Vision-compressed prompt positions: max position 2 for 6 tokens,
+        # so rope_delta = (2 + 1) - 6 = -3.
+        pos_row = mx.array([0, 1, 1, 2, 2, 2])
+        positions = mx.broadcast_to(pos_row[None, None, :], (3, 1, 6))
+        delta = mx.array([[-3]])
+
+        prefill_kwargs = {"rope_deltas": delta} if with_delta_kwarg else {}
+        lm(ids, cache=prompt_cache, position_ids=positions, **prefill_kwargs)
+
+        step = mx.array([[19]])
+        if with_delta_kwarg:
+            # The generate() decode flow: no position kwargs at all.
+            out = lm(step, cache=prompt_cache)
+        else:
+            # Ground truth: cache offset (6) + delta (-3) = position 3.
+            decode_positions = mx.full((3, 1, 1), 3, dtype=positions.dtype)
+            out = lm(step, cache=prompt_cache, position_ids=decode_positions)
+        mx.eval(out.logits)
+        return out.logits
+
+    def test_qwen3_vl_decode_continues_prefill_rope_deltas(self):
+        lm = self._tiny_qwen3_vl()
+        mx.eval(lm.parameters())
+        reference = self._decode_logits(lm, with_delta_kwarg=False)
+        subject = self._decode_logits(lm, with_delta_kwarg=True)
+        self.assertTrue(mx.allclose(reference, subject, atol=1e-5).item())
