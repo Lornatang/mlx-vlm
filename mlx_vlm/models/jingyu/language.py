@@ -25,7 +25,6 @@ class LanguageModel(nn.Module):
     def __init__(self, config: TextConfig):
         super().__init__()
         self.config = config
-        self.args = config
         self.model_type = config.model_type
         self.model = Qwen3Model(config)
         if not config.tie_word_embeddings:
@@ -45,7 +44,7 @@ class LanguageModel(nn.Module):
         if inputs is None and inputs_embeds is None:
             raise ValueError("Either `inputs` or `inputs_embeds` must be provided.")
 
-        out = self.model(inputs, cache=cache, input_embeddings=inputs_embeds)
+        out = self.model(inputs, cache, inputs_embeds)
         if self.config.tie_word_embeddings:
             out = self.model.embed_tokens.as_linear(out)
         else:

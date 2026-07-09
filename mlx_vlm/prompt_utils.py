@@ -82,6 +82,7 @@ MODEL_CONFIG = {
     "minimax_m3_vl": MessageFormat.LIST_WITH_IMAGE_FIRST,
     # Token-based models
     "jingyu": MessageFormat.IMAGE_TOKEN_NEWLINE,
+    "jingyu2_1": MessageFormat.IMAGE_TOKEN_NEWLINE,
     "llava-qwen2": MessageFormat.IMAGE_TOKEN_NEWLINE,
     "llava_qwen2": MessageFormat.IMAGE_TOKEN_NEWLINE,  # fastvlm
     "bunny-llama": MessageFormat.IMAGE_TOKEN_NEWLINE,
