@@ -45,17 +45,12 @@ class LanguageModel(nn.Module):
 
         out = self.model(inputs, cache, inputs_embeds)
         out = self.model.embed_tokens.as_linear(out)
-        return LanguageModelOutput(logits=out)
+        return LanguageModelOutput(out)
 
     def sanitize(self, weights):
-        weights = dict(weights)
-        if self.config.tie_word_embeddings:
-            weights.pop("language_model.lm_head.weight", None)
-            weights.pop("lm_head.weight", None)
-
         sanitized_weights = {}
         for name, param in weights.items():
-            if "conv.weight" in name:
+            if name.startswith("language_model.model.layers.") and "conv.weight" in name and param.ndim == 3:
                 if param.shape[-1] > param.shape[1]:
                     param = param.transpose(0, 2, 1)
 

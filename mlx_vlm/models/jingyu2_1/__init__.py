@@ -12,5 +12,5 @@
 # limitations under the License.
 # ==============================================================================
 from .config import ModelConfig, TextConfig, VisionConfig
-from .jingyu2_1 import Model, build_vision_projector
+from .jingyu2_1 import LanguageModel, Model, VisionModel, build_vision_projector
 from .processing import FastVLMImageProcessor, FastVLMProcessor
