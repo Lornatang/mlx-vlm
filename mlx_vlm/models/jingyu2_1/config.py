@@ -53,7 +53,6 @@ class TextConfig(BaseModelConfig):
     num_heads: int = 16
     full_attn_idxs: List[int] = None
 
-
     @classmethod
     def from_dict(cls, params):
         params = dict(params)
