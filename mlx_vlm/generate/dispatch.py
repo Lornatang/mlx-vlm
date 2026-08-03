@@ -19,7 +19,13 @@ from ..prompt_utils import apply_chat_template
 from ..speculative.utils import format_speculative_stats
 from ..tokenizer_utils import make_streaming_detokenizer
 from ..turboquant import TurboQuantKVCache, turboquant_enabled
-from ..utils import StoppingCriteria, ThinkingBudgetCriteria, load, prepare_inputs
+from ..utils import (
+    StoppingCriteria,
+    ThinkingBudgetCriteria,
+    load,
+    prepare_inputs,
+    should_add_special_tokens,
+)
 from .image import (
     DEFAULT_IMAGE_GUIDANCE,
     DEFAULT_IMAGE_SIZE,
@@ -155,6 +161,13 @@ def parse_arguments():
         type=float,
         default=2.0,
         help="Frames-per-second to sample from --video.",
+    )
+    parser.add_argument(
+        "--video-max-frames",
+        type=int,
+        default=16,
+        help="Cap on frames sent when video falls back to ordered images "
+        "(long clips are re-sampled evenly to this count).",
     )
     parser.add_argument(
         "--resize-shape",
@@ -651,6 +664,7 @@ from .diffusion import (
     is_diffusion_model,
     stream_diffusion_generate_from_kwargs,
 )
+from .types import GenerateKwargs, ProcessorLike, Unpack
 
 
 def _prime_cached_prefix_rope_state(
@@ -693,18 +707,57 @@ def _prime_cached_prefix_rope_state(
     return True
 
 
+def _cache_fully_retained(c: Any) -> bool:
+    """Whether ``c`` still holds its whole sequence from position 0.
+
+    Only such a cache can be rolled back to an earlier prefix. Note this is not
+    ``is_trimmable()``: ``BufferedRotatingKVCache`` reports itself trimmable even
+    after it has evicted early tokens, and trimming it then would only clamp to
+    its retained window and desync ``offset`` from the flat layers.
+    """
+    children = getattr(c, "caches", None)
+    if children is not None:  # CacheList
+        return all(_cache_fully_retained(x) for x in children)
+    start_position = getattr(c, "start_position", None)
+    if start_position is not None:  # Buffered/Chunked: evicts by advancing start
+        return int(start_position) == 0
+    max_size = getattr(c, "max_size", None)
+    if max_size is not None:  # RotatingKVCache: reusable until the window wraps
+        return int(getattr(c, "offset", 0) or 0) <= int(max_size)
+    return True  # KVCache / QuantizedKVCache retain the whole sequence
+
+
+def _prefix_cache_trim_amount(kv_cache: List[Any], prefix_len: int) -> Optional[int]:
+    """Trailing tokens to drop so ``kv_cache`` keeps only its first ``prefix_len``.
+
+    The old reuse path sliced key/value arrays directly --
+    ``keys[..., :prefix_len, :]`` -- which is only valid for a flat cache. On a
+    rotating (sliding-window) cache it slices a ring buffer by a logical length,
+    taking an arbitrary rotation of the window and leaving the ring index stale:
+    silent output corruption, or a broadcast crash once speculative decoding wraps
+    the cache in ``BufferedRotatingKVCache``. Returns the number of tokens to drop
+    (``0`` when the whole cache is reusable), or ``None`` when an entry has already
+    evicted part of the prefix and the caller must cold-prefill instead.
+    """
+    cached_len = max((int(getattr(c, "offset", 0) or 0) for c in kv_cache), default=0)
+    n_drop = max(0, cached_len - prefix_len)
+    if n_drop and not all(_cache_fully_retained(c) for c in kv_cache):
+        return None
+    return n_drop
+
+
 from .ar import generate_step
 
 
 def stream_generate(
     model: nn.Module,
-    processor: PreTrainedTokenizer,
+    processor: ProcessorLike | PreTrainedTokenizer,
     prompt: str,
-    image: Union[str, List[str]] = None,
-    audio: Union[str, List[str]] = None,
-    video: Union[str, List[str]] = None,
-    **kwargs,
-) -> Union[str, Generator[str, None, None]]:
+    image: Union[str, List[str], None] = None,
+    audio: Union[str, List[str], None] = None,
+    video: Union[str, List[str], None] = None,
+    **kwargs: Unpack[GenerateKwargs],
+) -> Generator[GenerationResult, None, None]:
     """
     A generator producing text based on the given prompt from the model.
 
@@ -743,11 +796,7 @@ def stream_generate(
         else []
     )
 
-    add_special_tokens = (
-        getattr(processor, "chat_template", None) is None
-        if model.config.model_type in ["gemma3", "gemma3n", "gemma4", "gemma4_unified"]
-        else True
-    )
+    add_special_tokens = should_add_special_tokens(model.config.model_type, processor)
 
     resize_shape = normalize_resize_shape(kwargs.pop("resize_shape", None))
     image_token_index = getattr(model.config, "image_token_index", None)
@@ -846,120 +895,70 @@ def stream_generate(
 
     if apc_manager is not None:
         image_hash = _apc.hash_image_payload(pixel_values=pixel_values, image_ref=image)
-        apc_extra_hash = _apc.tenant_scoped_hash(apc_tenant, image_hash)
+        audio_features = kwargs.get("input_features")
+        video_features = kwargs.get("pixel_values_videos")
+        apc_extra_hash = _apc.semantic_extra_hash(
+            tenant=apc_tenant,
+            image_hash=image_hash,
+            media={
+                "audio": audio_features if audio_features is not None else audio,
+                "video": video_features if video_features is not None else video,
+                "embeddings": kwargs.get("inputs_embeds"),
+                "masks": mask,
+            },
+            model=model,
+            processor=processor,
+        )
 
     if prompt_cache_state is not None and prompt_cache_state.cache is not None:
         prefix_len = prompt_cache_state.find_prefix_length(full_input_ids_list)
-        if prefix_len > 0 and prefix_len < input_ids.shape[1]:
-            if _apc_suffix_is_text_only(prefix_len) and _prime_cached_prefix_rope_state(
-                model, input_ids, mask, kwargs
-            ):
-                reused_prefix_len = prefix_len
-                # Trim to only new tokens
-                input_ids = input_ids[:, prefix_len:]
-                pixel_values = None
-                kwargs.pop("cached_image_features", None)
-                # Reuse the saved KV cache (trimmed to prefix length)
-                kv_cache = prompt_cache_state.cache
-                # Trim cache to prefix_len in case it includes generated tokens
-                for c in kv_cache:
-                    if hasattr(c, "keys") and c.keys is not None:
-                        cached_len = c.keys.shape[2]
-                        if cached_len > prefix_len:
-                            c.keys = c.keys[:, :, :prefix_len, :]
-                            c.values = c.values[:, :, :prefix_len, :]
-                            if hasattr(c, "offset"):
-                                c.offset = prefix_len
-                kwargs["prompt_cache"] = kv_cache
+        kv_cache = prompt_cache_state.cache
+        # None => a cache can't be trimmed back to the shared prefix (wrapped
+        # rotating window); reusing it would corrupt state, so cold-prefill instead.
+        n_drop = _prefix_cache_trim_amount(kv_cache, prefix_len)
+        if (
+            0 < prefix_len < input_ids.shape[1]
+            and n_drop is not None
+            and _apc_suffix_is_text_only(prefix_len)
+            and _prime_cached_prefix_rope_state(model, input_ids, mask, kwargs)
+        ):
+            # Drop cached tokens past the shared prefix via each cache's own trim().
+            for c in kv_cache:
+                if n_drop:
+                    c.trim(n_drop)
+            reused_prefix_len = prefix_len
+            # Trim to only new tokens
+            input_ids = input_ids[:, prefix_len:]
+            pixel_values = None
+            kwargs.pop("cached_image_features", None)
+            kwargs["prompt_cache"] = kv_cache
 
     # APC: cross-request, hash-based prefix lookup. Only consulted if a per-turn
     # PromptCacheState didn't already produce a hit.
     if apc_manager is not None and reused_prefix_len == 0:
-        if apc_mode == "exact":
-            exact_prompt_cache, exact_prefix_len = apc_manager.lookup_exact_cache(
-                full_input_ids_list,
-                extra_hash=apc_extra_hash,
-                min_prefix_tokens=apc_safe_prefix_lookup_min,
-            )
-            if (
-                exact_prompt_cache is not None
-                and exact_prefix_len > 0
-                and exact_prefix_len < input_ids.shape[1]
-                and _apc_suffix_is_text_only(exact_prefix_len)
-                and _prime_cached_prefix_rope_state(model, input_ids, mask, kwargs)
-            ):
-                reused_prefix_len = exact_prefix_len
-                input_ids = input_ids[:, exact_prefix_len:]
+        plan = _apc.apc_lookup_plan(
+            apc_manager,
+            full_input_ids_list,
+            extra_hash=apc_extra_hash,
+            apc_mode=apc_mode,
+            safe_lookup_min=apc_safe_prefix_lookup_min,
+            suffix_is_text_only=_apc_suffix_is_text_only,
+            prefix_has_media=_apc_prefix_has_media_tokens,
+        )
+        if plan is not None:
+            plen = plan["prefix_len"]
+            warm_cache = plan.get("warm_cache")
+            matched_blocks = plan.get("matched_blocks") or []
+            primed = _prime_cached_prefix_rope_state(model, input_ids, mask, kwargs)
+            if primed:
+                reused_prefix_len = plen
+                input_ids = input_ids[:, plen:]
                 pixel_values = None
                 kwargs.pop("cached_image_features", None)
-                kwargs["prompt_cache"] = exact_prompt_cache
-        else:
-            matched_blocks, prefix_len = apc_manager.lookup_prefix(
-                full_input_ids_list, extra_hash=apc_extra_hash
-            )
-            if prefix_len > 0 and _apc_prefix_has_media_tokens(prefix_len):
-                apc_manager.release(matched_blocks)
-                matched_blocks = []
-                prefix_len = 0
-            exact_prompt_cache = None
-            exact_prefix_len = 0
-            if prefix_len < input_ids.shape[1]:
-                exact_prompt_cache, exact_prefix_len = apc_manager.lookup_exact_cache(
-                    full_input_ids_list,
-                    extra_hash=apc_extra_hash,
-                    min_prefix_tokens=max(prefix_len, apc_safe_prefix_lookup_min),
-                )
-            disk_prompt_cache = None
-            disk_prefix_len = 0
-            if max(prefix_len, exact_prefix_len) < input_ids.shape[1]:
-                disk_prompt_cache, disk_prefix_len = (
-                    apc_manager.lookup_prefix_disk_cache(
-                        full_input_ids_list,
-                        extra_hash=apc_extra_hash,
-                        min_prefix_tokens=max(
-                            prefix_len,
-                            exact_prefix_len,
-                            apc_safe_prefix_lookup_min,
-                        ),
-                        allow_memory_overlap=max(prefix_len, exact_prefix_len) > 0,
-                    )
-                )
-            if (
-                disk_prefix_len > max(prefix_len, exact_prefix_len)
-                and disk_prefix_len < input_ids.shape[1]
-            ):
-                if matched_blocks:
-                    apc_manager.release(matched_blocks)
-                if _apc_suffix_is_text_only(
-                    disk_prefix_len
-                ) and _prime_cached_prefix_rope_state(model, input_ids, mask, kwargs):
-                    reused_prefix_len = disk_prefix_len
-                    input_ids = input_ids[:, disk_prefix_len:]
-                    pixel_values = None
-                    kwargs.pop("cached_image_features", None)
-                    kwargs["prompt_cache"] = disk_prompt_cache
-            elif (
-                exact_prefix_len > prefix_len and exact_prefix_len < input_ids.shape[1]
-            ):
-                if matched_blocks:
-                    apc_manager.release(matched_blocks)
-                if _apc_suffix_is_text_only(
-                    exact_prefix_len
-                ) and _prime_cached_prefix_rope_state(model, input_ids, mask, kwargs):
-                    reused_prefix_len = exact_prefix_len
-                    input_ids = input_ids[:, exact_prefix_len:]
-                    pixel_values = None
-                    kwargs.pop("cached_image_features", None)
-                    kwargs["prompt_cache"] = exact_prompt_cache
-            elif prefix_len > 0 and prefix_len < input_ids.shape[1]:
-                if _apc_suffix_is_text_only(
-                    prefix_len
-                ) and _prime_cached_prefix_rope_state(model, input_ids, mask, kwargs):
+                if warm_cache is not None:
+                    kwargs["prompt_cache"] = warm_cache
+                else:
                     apc_blocks_in_use = matched_blocks
-                    reused_prefix_len = prefix_len
-                    input_ids = input_ids[:, prefix_len:]
-                    pixel_values = None
-                    kwargs.pop("cached_image_features", None)
                     _kv_bits = kwargs.get("kv_bits")
                     _quant_cfg = (
                         {
@@ -972,13 +971,10 @@ def stream_generate(
                     )
                     kwargs["prompt_cache"] = _apc.make_warm_kv_cache(
                         matched_blocks,
-                        min_capacity_tokens=prefix_len + input_ids.shape[1] + 1,
+                        min_capacity_tokens=plen + input_ids.shape[1] + 1,
                         kv_quant_config=_quant_cfg,
                     )
-                else:
-                    apc_manager.release(matched_blocks)
-            elif matched_blocks:
-                # Full match (no new tokens to compute) — release; fall through to normal path
+            elif warm_cache is None and matched_blocks:
                 apc_manager.release(matched_blocks)
 
     if thinking_budget is not None:
@@ -1142,28 +1138,14 @@ def stream_generate(
                     all_ids = full_input_ids_list + [
                         t.item() if hasattr(t, "item") else t for t in generated_tokens
                     ]
-                # Snapshot float K/V per layer (dequants when keys are tuples).
-                layer_keys: List[mx.array] = []
-                layer_values: List[mx.array] = []
-                ok = True
-                for c in tracked_cache:
-                    k, v = _apc.layer_kv_for_apc(c)
-                    if k is None or v is None:
-                        ok = False
-                        break
-                    layer_keys.append(k)
-                    layer_values.append(v)
-                if ok and layer_keys:
-                    new_blocks = apc_manager.store_kv_blocks(
-                        all_ids,
-                        layer_keys,
-                        layer_values,
-                        extra_hash=apc_extra_hash,
-                        skip_first_n_tokens=reused_prefix_len,
-                    )
-                    apc_manager.release(apc_blocks_in_use + new_blocks)
-                else:
-                    apc_manager.release(apc_blocks_in_use)
+                _apc.commit_prefix_blocks(
+                    apc_manager,
+                    tracked_cache,
+                    all_ids,
+                    extra_hash=apc_extra_hash,
+                    skip_first_n_tokens=reused_prefix_len,
+                    blocks_in_use=apc_blocks_in_use,
+                )
             except Exception as e:
                 logger.warning("APC store failed: %s", e)
                 apc_manager.release(apc_blocks_in_use)
@@ -1174,13 +1156,13 @@ def stream_generate(
 
 def generate(
     model: nn.Module,
-    processor: PreTrainedTokenizer,
+    processor: ProcessorLike | PreTrainedTokenizer,
     prompt: str,
-    image: Union[str, List[str]] = None,
-    audio: Union[str, List[str]] = None,
-    video: Union[str, List[str]] = None,
+    image: Union[str, List[str], None] = None,
+    audio: Union[str, List[str], None] = None,
+    video: Union[str, List[str], None] = None,
     verbose: bool = False,
-    **kwargs,
+    **kwargs: Unpack[GenerateKwargs],
 ) -> GenerationResult:
     """
     Generate text from the model.
@@ -1374,6 +1356,62 @@ def main():
             prompt if isinstance(prompt, list) else [prompt]
         )
 
+    # Processors without native video support used to drop --video silently:
+    # the frames were loaded, the processor ignored the kwarg, and the model
+    # hallucinated an answer with no visual input at all. Fall back to sending
+    # sampled frames as ordered images (see generate/video.py).
+    gen_kwargs_extra = {}
+    video_prompt = None
+    if args.video:
+        from .video import (
+            pair_adjacent_frames,
+            processor_handles_video,
+            sample_video_frames,
+            subsample_evenly,
+            timestamped_frame_messages,
+        )
+
+        if not processor_handles_video(processor):
+            frames, frame_fps = sample_video_frames(args.video, args.fps or 2.0)
+            sampled = len(frames)
+            max_frames = max(2, getattr(args, "video_max_frames", 16) or 16)
+            pair_hook = getattr(model, "prepare_video_frame_pairs", None)
+            if pair_hook is not None:
+                anchors, first_frames, second_frames = pair_adjacent_frames(
+                    frames, max_frames
+                )
+                gen_kwargs_extra.update(pair_hook(processor, second_frames))
+                still_count = len(args.image or [])
+                args.image = (args.image or []) + first_frames
+                user_text = (
+                    " ".join(args.prompt)
+                    if isinstance(args.prompt, list)
+                    else str(args.prompt)
+                )
+                msgs = timestamped_frame_messages(
+                    user_text,
+                    args.system,
+                    still_count,
+                    [a / max(frame_fps, 1e-6) for a in anchors],
+                )
+                _tok = (
+                    processor.tokenizer
+                    if hasattr(processor, "tokenizer")
+                    else processor
+                )
+                video_prompt = _tok.apply_chat_template(
+                    msgs, add_generation_prompt=True, tokenize=False
+                )
+            else:
+                frames = subsample_evenly(frames, max_frames)
+                print(
+                    f"{processor.__class__.__name__} has no native video "
+                    f"support; sending {len(frames)} of {sampled} sampled "
+                    f"frames as ordered images."
+                )
+                args.image = (args.image or []) + frames
+            args.video = None
+
     num_images = len(args.image) if args.image is not None else 0
     num_audios = len(args.audio) if args.audio is not None else 0
 
@@ -1384,14 +1422,17 @@ def main():
         chat_template_kwargs["video"] = args.video
         chat_template_kwargs["fps"] = args.fps
 
-    prompt = apply_chat_template(
-        processor,
-        config,
-        prompt,
-        num_images=num_images,
-        num_audios=num_audios,
-        **chat_template_kwargs,
-    )
+    if video_prompt is not None:
+        prompt = video_prompt
+    else:
+        prompt = apply_chat_template(
+            processor,
+            config,
+            prompt,
+            num_images=num_images,
+            num_audios=num_audios,
+            **chat_template_kwargs,
+        )
 
     kwargs = {}
 
@@ -1484,6 +1525,7 @@ def main():
 
     else:
         gen_kwargs = {
+            **gen_kwargs_extra,
             "image": args.image,
             "audio": args.audio,
             "video": args.video,
