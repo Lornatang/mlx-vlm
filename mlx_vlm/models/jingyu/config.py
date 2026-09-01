@@ -25,18 +25,18 @@ class TextConfig(BaseModelConfig):
     Attributes:
         model_type (str): Identifier for the language-model architecture.
         hidden_size (int, optional): Dimensionality of the LLM embeddings. Defaults to 896.
-        num_hidden_layers (int): Number of transformer layers in the LLM.
-        intermediate_size (int): Size of the feed-forward inner projection.
-        num_attention_heads (int): Number of query heads in self-attention.
-        rms_norm_eps (float): Epsilon used in RMSNorm for numerical stability.
-        vocab_size (int): Size of the token vocabulary.
-        num_key_value_heads (int): Number of key/value heads for grouped-query attention.
-        max_position_embeddings (int): Maximum sequence length the position encodings support.
-        rope_theta (float): Base frequency for rotary position embeddings (RoPE).
-        rope_traditional (bool): Whether to use the traditional (non-NeoX) RoPE interleaving.
+        num_hidden_layers (int, optional): Number of transformer layers in the LLM. Defaults to 24.
+        intermediate_size (int, optional): Size of the feed-forward inner projection. Defaults to 4864.
+        num_attention_heads (int, optional): Number of query heads in self-attention. Defaults to 14.
+        rms_norm_eps (float, optional): Epsilon used in RMSNorm for numerical stability. Defaults to 1e-06.
+        vocab_size (int, optional): Size of the token vocabulary. Defaults to 151936.
+        num_key_value_heads (int, optional): Number of key/value heads for grouped-query attention. Defaults to 2.
+        max_position_embeddings (int, optional): Maximum sequence length the position encodings support. Defaults to 32768.
+        rope_theta (float, optional): Base frequency for rotary position embeddings (RoPE). Defaults to 1000000.
+        rope_traditional (bool, optional): Whether to use the traditional (non-NeoX) RoPE interleaving. Defaults to ``False``.
         rope_scaling (Optional[Dict[str, Union[float, str]]], optional): Optional RoPE scaling strategy and parameters. Defaults to ``None``.
-        head_dim (int): Dimensionality of each attention head.
-        tie_word_embeddings (bool): Whether to tie the input and output embedding weights.
+        head_dim (int, optional): Dimensionality of each attention head. Defaults to 128.
+        tie_word_embeddings (bool, optional): Whether to tie the input and output embedding weights. Defaults to ``True``.
     """
 
     model_type: str
@@ -74,8 +74,7 @@ class VisionConfig(BaseModelConfig):
         layers (list[int], optional): Number of blocks in each FastViTHD stage. Defaults to ``[2, 12, 24, 4, 2]``.
         embed_dims (list[int], optional): Channel dimensionality of each FastViTHD stage. Defaults to ``[96, 192, 384, 768, 1536]``.
         mlp_ratios (list[int], optional): MLP expansion ratio per stage. Defaults to ``[4, 4, 4, 4, 4]``.
-        downsamples (list[bool], optional): Whether each stage applies spatial downsampling.
-            Defaults to ``[True, True, True, True, True]``.
+        downsamples (list[bool], optional): Whether each stage applies spatial downsampling. Defaults to ``[True, True, True, True, True]``.
         pos_embs_shapes (list[Optional[tuple[int, int]]], optional): Positional embedding shape per stage
             (``None`` if unused). Defaults to ``[None, None, None, (7, 7), (7, 7)]``.
         token_mixers (tuple[str, ...], optional): Token-mixing type per stage (repmixer or attention).
