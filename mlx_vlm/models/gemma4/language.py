@@ -650,6 +650,9 @@ class Gemma4TextModel(nn.Module):
 
 
 class LanguageModel(nn.Module):
+    supports_logits_to_keep = True
+    requires_uniform_batch_acceptance = True
+
     def __init__(self, config: TextConfig):
         super().__init__()
         self.config = config
@@ -726,6 +729,7 @@ class LanguageModel(nn.Module):
         # Allow callers to pass pre-allocated sinks directly.
         hidden_sink = kwargs.pop("hidden_sink", hidden_sink)
         shared_kv_sink = kwargs.pop("shared_kv_sink", shared_kv_sink)
+        logits_to_keep = kwargs.pop("logits_to_keep", None)
 
         out = self.model(
             inputs,
@@ -738,6 +742,8 @@ class LanguageModel(nn.Module):
             shared_kv_sink=shared_kv_sink,
             **kwargs,
         )
+        if logits_to_keep:
+            out = out[:, -int(logits_to_keep) :, :]
         out = self.logits_from_hidden(out)
         return LanguageModelOutput(
             logits=out,
@@ -780,15 +786,18 @@ class LanguageModel(nn.Module):
                 kv_len = c._idx
                 ve = valid_ends.tolist()
                 verify_start = kv_len - n
-                for bi in range(accepted.shape[0]):
-                    start = verify_start + int(ve[bi])
-                    if start < kv_len:
-                        zero_row_tail = getattr(c, "zero_row_tail", None)
-                        if callable(zero_row_tail):
-                            zero_row_tail(bi, start, kv_len)
-                        else:
-                            c.keys[bi, :, start:kv_len, :] = 0
-                            c.values[bi, :, start:kv_len, :] = 0
+                if any(
+                    verify_start + int(ve[bi]) < kv_len
+                    for bi in range(accepted.shape[0])
+                ):
+                    raise RuntimeError(
+                        "Gemma 4 batched speculative rollback requires uniform "
+                        f"per-row acceptance; got ragged accepts {accepted.tolist()}. "
+                        "Zeroing a rejected row's KV tail leaves phantom keys "
+                        "attended (issue #1962); set "
+                        "requires_uniform_batch_acceptance on the drafter or target "
+                        "so accepts are clamped before rollback."
+                    )
         return max_a
 
     def sanitize(self, weights):
