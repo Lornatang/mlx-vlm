@@ -3,6 +3,7 @@ from typing import Union
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx.utils import tree_unflatten
 
 
 class LoRaLayer(nn.Module):
@@ -40,31 +41,50 @@ class LoRaLayer(nn.Module):
 
 
 def replace_lora_with_linear(model):
-    for i, layer in enumerate(model.layers):
-        if isinstance(layer, LoRaLayer):
-            # Compute the final merged weight
-            lora_update = layer.scale * (layer.A @ layer.B)
-            updated_weight = layer.original_layer.weight + lora_update
-            use_bias = layer.original_layer.bias is not None
+    """Fuse legacy LoRaLayer adapters into their base linear layers.
 
-            updated_bias = layer.original_layer.bias
+    Adapters are attached at nested module names by get_peft_model, so the
+    whole module tree is walked. Each LoRaLayer is replaced by an equivalent
+    nn.Linear (or nn.QuantizedLinear, requantized with the original
+    group_size, bits and mode) whose forward matches the adapter in eval
+    mode.
+    """
+    replacements = []
+    for name, layer in model.named_modules():
+        if not isinstance(layer, LoRaLayer):
+            continue
+        original = layer.original_layer
+        weight = original.weight
+        is_quantized = isinstance(original, nn.QuantizedLinear)
+        if is_quantized:
+            weight = mx.dequantize(
+                weight,
+                original.scales,
+                original.biases,
+                group_size=original.group_size,
+                bits=original.bits,
+                mode=original.mode,
+            )
+        output_dims, input_dims = weight.shape
+        use_bias = "bias" in original
 
-            # Create a new Linear layer with the updated parameters
-            new_linear_layer = nn.Linear(
-                updated_weight.size(1), updated_weight.size(0), bias=use_bias
+        # Create a new Linear layer with the merged parameters
+        new_linear_layer = nn.Linear(input_dims, output_dims, bias=use_bias)
+        lora_update = (layer.scale * (layer.A @ layer.B)).T.astype(weight.dtype)
+        new_linear_layer.weight = weight + lora_update
+        if use_bias:
+            new_linear_layer.bias = original.bias
+
+        if is_quantized:
+            new_linear_layer = nn.QuantizedLinear.from_linear(
+                new_linear_layer,
+                original.group_size,
+                original.bits,
+                mode=original.mode,
             )
 
-            new_linear_layer.weight = updated_weight
+        replacements.append((name, new_linear_layer))
 
-            if use_bias:
-                new_linear_layer.bias = updated_bias
-
-            if isinstance(layer.original_layer, nn.QuantizedLinear):
-                new_linear_layer = nn.QuantizedLinear.from_linear(
-                    new_linear_layer,
-                    new_linear_layer.group_size,
-                    new_linear_layer.bits,
-                )
-
-            # Replace the LoRaLayer with the new Linear layer in the model
-            model.layers[i] = new_linear_layer
+    if replacements:
+        model.update_modules(tree_unflatten(replacements))
+    return model

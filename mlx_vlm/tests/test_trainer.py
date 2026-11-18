@@ -16,7 +16,7 @@ from mlx.utils import tree_flatten
 from mlx_vlm.tests.test_models import tiny_config
 from mlx_vlm.trainer.datasets.next_token import VisionDataset
 from mlx_vlm.trainer.peft import DoRAEmbedding
-from mlx_vlm.trainer.peft.lora import LoRaLayer
+from mlx_vlm.trainer.peft.lora import LoRaLayer, replace_lora_with_linear
 from mlx_vlm.trainer.peft.lora_layers import LoRALinear
 from mlx_vlm.trainer.peft.utils import (
     apply_lora_layers,
@@ -503,3 +503,106 @@ def test_trainer_public_exports():
     assert trainer.train is vlm.train is train
     assert trainer.train_orpo is vlm.train_orpo is train_orpo
     assert trainer.get_peft_model is get_peft_model
+
+
+def _legacy_lora_model(quantized=False):
+    model = nn.Module()
+    model.language_model = nn.Module()
+    model.language_model.layers = [nn.Module()]
+    block = model.language_model.layers[0]
+    block.self_attn = nn.Module()
+    base = nn.Linear(32, 16, bias=False)
+    if quantized:
+        base = nn.QuantizedLinear.from_linear(base, group_size=32, bits=4)
+    block.self_attn.q_proj = LoRaLayer(base, rank=4, alpha=8.0, dropout=0.0)
+    block.mlp = nn.Module()
+    block.mlp.down_proj = LoRaLayer(
+        nn.Linear(32, 16, bias=True), rank=4, alpha=8.0, dropout=0.0
+    )
+    return model
+
+
+def _seed_lora_adapters(model):
+    for _, layer in model.named_modules():
+        if isinstance(layer, LoRaLayer):
+            layer.A = mx.random.normal(shape=layer.A.shape) * 0.05
+            layer.B = mx.random.normal(shape=layer.B.shape) * 0.05
+
+
+@pytest.mark.parametrize("quantized", [False, True])
+def test_replace_lora_with_linear_fuses_nested_adapters(quantized):
+    mx.random.seed(0)
+    model = _legacy_lora_model(quantized)
+    _seed_lora_adapters(model)
+    inputs = mx.random.normal((2, 32))
+    targets = (
+        "language_model.layers.0.self_attn.q_proj",
+        "language_model.layers.0.mlp.down_proj",
+    )
+    modules = dict(model.named_modules())
+    before = {name: modules[name](inputs) for name in targets}
+    expected = {}
+    for name in targets:
+        layer = modules[name]
+        original = layer.original_layer
+        weight = original.weight
+        if isinstance(original, nn.QuantizedLinear):
+            weight = mx.dequantize(
+                weight,
+                original.scales,
+                original.biases,
+                group_size=original.group_size,
+                bits=original.bits,
+                mode=original.mode,
+            )
+        expected[name] = weight + (layer.scale * (layer.A @ layer.B)).T
+
+    replace_lora_with_linear(model)
+
+    assert not any(isinstance(layer, LoRaLayer) for _, layer in model.named_modules())
+    modules = dict(model.named_modules())
+    for name in targets:
+        fused = modules[name]
+        if quantized and name.endswith("q_proj"):
+            assert isinstance(fused, nn.QuantizedLinear)
+            assert (fused.bits, fused.group_size) == (4, 32)
+            # Fusing must requantize exactly like quantizing the merged
+            # weight directly; mlx's affine grid snaps zero to a level, so
+            # the round-trip error is not bounded by half the scale.
+            packed, scales, biases = mx.quantize(
+                expected[name],
+                group_size=fused.group_size,
+                bits=fused.bits,
+                mode=fused.mode,
+            )
+            assert mx.array_equal(fused.weight, packed).item()
+            assert mx.array_equal(fused.scales, scales).item()
+            assert mx.array_equal(fused.biases, biases).item()
+        else:
+            assert isinstance(fused, nn.Linear)
+            assert mx.allclose(fused.weight, expected[name], atol=1e-5).item()
+            assert mx.allclose(fused(inputs), before[name], atol=1e-4).item()
+        assert ("bias" in fused) == name.endswith("down_proj")
+
+
+def test_replace_lora_with_linear_matches_eval_forward_with_dropout():
+    mx.random.seed(1)
+    model = nn.Module()
+    model.proj = LoRaLayer(nn.Linear(8, 8, bias=True), rank=4, alpha=8.0, dropout=0.5)
+    model.proj.A = mx.random.normal(shape=model.proj.A.shape) * 0.1
+    model.proj.B = mx.random.normal(shape=model.proj.B.shape) * 0.1
+    model.eval()
+    inputs = mx.random.normal((3, 8))
+    before = model.proj(inputs)
+    replace_lora_with_linear(model)
+    assert isinstance(model.proj, nn.Linear)
+    assert mx.allclose(model.proj(inputs), before, atol=1e-5).item()
+
+
+def test_replace_lora_with_linear_without_adapters_is_noop():
+    model = nn.Module()
+    model.layers = [nn.Linear(4, 4)]
+    weight = model.layers[0].weight
+    replace_lora_with_linear(model)
+    assert isinstance(model.layers[0], nn.Linear)
+    assert model.layers[0].weight is weight
