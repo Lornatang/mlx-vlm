@@ -6,6 +6,7 @@ import argparse
 import copy
 import json
 import math
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from functools import wraps
 from itertools import islice
@@ -468,13 +469,33 @@ def print_trainable_parameters(model):
     )
 
 
-def calculate_iters(train_set: Sequence[Any], batch_size: int, epochs: int) -> int:
-    """Calculate optimizer iterations for a finite number of dataset epochs."""
+def calculate_iters(
+    train_set: Sequence[Any],
+    batch_size: int,
+    epochs: int,
+    *,
+    group_key: Callable[[int], Any] | None = None,
+) -> int:
+    """Calculate optimizer iterations for a finite number of dataset epochs.
+
+    Counts the batches iterate_batch_indices actually yields: only complete
+    batches are kept, and indices are grouped by group_key(index) first so a
+    mixed-media dataset cannot be counted as if it were homogeneous. The key
+    takes the dataset index, matching iterate_batch_indices.
+    """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1.")
     if epochs < 1:
         raise ValueError("epochs must be at least 1.")
-    batches_per_epoch = math.ceil(len(train_set) / batch_size)
+    if group_key is None:
+        counts = [len(train_set)]
+    else:
+        counts = Counter(group_key(index) for index in range(len(train_set))).values()
+    batches_per_epoch = sum(count // batch_size for count in counts)
+    if batches_per_epoch == 0:
+        raise ValueError(
+            "No complete batches fit within a single media type; reduce batch_size."
+        )
     iterations = epochs * batches_per_epoch
     tqdm.write(
         f"Calculated {iterations} iterations from {epochs} epoch(s) "

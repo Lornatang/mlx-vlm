@@ -503,3 +503,56 @@ def test_trainer_public_exports():
     assert trainer.train is vlm.train is train
     assert trainer.train_orpo is vlm.train_orpo is train_orpo
     assert trainer.get_peft_model is get_peft_model
+
+
+def test_calculate_iters_counts_only_complete_batches(capsys):
+    from mlx_vlm.trainer.common.utils import calculate_iters
+
+    # 10 samples at batch size 4 yield two complete batches per epoch, not
+    # the three ceil() reports; the incomplete tail is dropped by
+    # iterate_batch_indices.
+    assert calculate_iters(list(range(10)), 4, 2) == 4
+    captured = capsys.readouterr()
+    assert "Calculated 4 iterations" in captured.out + captured.err
+
+
+def test_calculate_iters_counts_complete_batches_per_media_group():
+    from mlx_vlm.trainer.common.utils import calculate_iters
+
+    samples = [("image", index) for index in range(3)]
+    samples += [("video", index) for index in range(3)]
+    # Two groups of three at batch size 2 give one complete batch each.
+    # group_key takes the dataset index, like iterate_batch_indices's key.
+    assert (
+        calculate_iters(samples, 2, 1, group_key=lambda index: samples[index][0]) == 2
+    )
+
+
+def test_calculate_iters_raises_when_no_group_fits():
+    from mlx_vlm.trainer.common.utils import calculate_iters
+
+    samples = [(group, index) for group in range(4) for index in range(2)]
+    with pytest.raises(ValueError, match="No complete batches"):
+        calculate_iters(samples, 4, 1, group_key=lambda index: samples[index][0])
+
+
+def test_calculate_iters_matches_iterate_batch_indices():
+    from mlx_vlm.trainer.common.utils import calculate_iters, iterate_batch_indices
+
+    size, batch_size = 13, 4
+    group_key = lambda index: index % 3
+    yielded = sum(
+        1
+        for _ in iterate_batch_indices(
+            size,
+            batch_size,
+            length_key=lambda index: index,
+            group_key=group_key,
+            train=False,
+        )
+    )
+    assert (
+        calculate_iters(list(range(size)), batch_size, 1, group_key=group_key)
+        == yielded
+    )
+    assert yielded == 3
